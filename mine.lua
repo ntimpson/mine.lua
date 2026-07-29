@@ -2,7 +2,7 @@
   ATM10 Mining Dimension Ore Turtle
   ----------------------------------
   - Asks which ore's Y-band to use, the turtle's world Y, and square size
-  - Strip-mines an N×N area with parallel tunnels spaced 3 blocks apart
+  - Mines a main shaft to the right with branches spaced 3 blocks apart
   - Collects every block it mines (not only the selected band ore)
   - Follows connected ore veins (capped at 128 blocks) then resumes
   - After each square, descends 3 blocks and repeats through the band
@@ -49,6 +49,8 @@ local ORE_BANDS = {
   lapis        = {65, 146},
   emerald      = {65, 247},
   allthemodium = {65, 128},
+  ancient_debris = {1, 64},
+  debris       = {1, 64},
   uranium      = {-62, 157},
   platinum     = {-62, 34},
   silver       = {-62, 34},
@@ -58,6 +60,19 @@ local ORE_BANDS = {
   tin          = {-62, 181},
   zinc         = {-62, 128},
   lead         = {-62, 34},
+}
+
+-- ATM progression ores are player-only in ATM10. Detect and preserve them.
+local PROTECTED_ORES = {
+  ["allthemodium:allthemodium_ore"] = true,
+  ["allthemodium:vibranium_ore"] = true,
+  ["allthemodium:unobtainium_ore"] = true,
+}
+
+local BAND_ALIASES = {
+  ["ancient debris"] = "ancient_debris",
+  ["ancientdebris"] = "ancient_debris",
+  ["netherite"] = "ancient_debris",
 }
 
 ------------------------------------------------------------
@@ -88,6 +103,22 @@ local function loadState()
   return false
 end
 
+local function isProtectedOreName(name)
+  if not name then return false end
+  local n = name:lower()
+  if PROTECTED_ORES[n] then return true end
+  if not n:find("allthemodium:", 1, true) then return false end
+  return n:find("allthemodium_ore", 1, true) ~= nil or
+         n:find("vibranium_ore", 1, true) ~= nil or
+         n:find("unobtainium_ore", 1, true) ~= nil
+end
+
+local function warnProtectedOre(data, direction)
+  print("Protected ATM ore found " .. direction .. " at relative (" ..
+        pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
+  print("Leaving " .. data.name .. " intact for manual mining.")
+end
+
 ------------------------------------------------------------
 -- LOW-LEVEL MOVEMENT (wraps turtle.* and updates pos/facing)
 ------------------------------------------------------------
@@ -109,13 +140,19 @@ end
 
 local function digForward()
   while turtle.detect() do
-    if not turtle.dig() then break end
+    local ok, data = turtle.inspect()
+    if ok and isProtectedOreName(data.name) then
+      warnProtectedOre(data, "ahead")
+      return false
+    end
+    if not turtle.dig() then return false end
     sleep(0.4)
   end
+  return true
 end
 
 local function forward()
-  digForward()
+  if not digForward() then return false end
   if turtle.forward() then
     pos.x = pos.x + DX[facing + 1]
     pos.z = pos.z + DZ[facing + 1]
@@ -142,7 +179,12 @@ end
 
 local function up()
   while turtle.detectUp() do
-    if not turtle.digUp() then break end
+    local ok, data = turtle.inspectUp()
+    if ok and isProtectedOreName(data.name) then
+      warnProtectedOre(data, "above")
+      return false
+    end
+    if not turtle.digUp() then return false end
     sleep(0.4)
   end
   if turtle.up() then
@@ -155,7 +197,12 @@ end
 
 local function down()
   while turtle.detectDown() do
-    if not turtle.digDown() then break end
+    local ok, data = turtle.inspectDown()
+    if ok and isProtectedOreName(data.name) then
+      warnProtectedOre(data, "below")
+      return false
+    end
+    if not turtle.digDown() then return false end
     sleep(0.4)
   end
   if turtle.down() then
@@ -197,6 +244,7 @@ local function isValuableBlock(data)
   if not data or not data.name then return false end
   local name = data.name:lower()
 
+  if isProtectedOreName(name) then return false end
   if name:find("ancient_debris", 1, true) then return true end
   if hasOreTag(data.tags) then return true end
   if name:find("_ore", 1, true) or name:find(":ore_", 1, true) then return true end
@@ -341,10 +389,31 @@ local function goTo(x, y, z)
   return true
 end
 
-local function goHome()
+-- Active branch route: branch -> main shaft -> layer origin -> home.
+local routeActive = false
+local routeLayerY = 0
+local routeBranchX = 0
+
+local function followRouteHome()
+  if routeActive then
+    if not goTo(routeBranchX, routeLayerY, 0) then return false end
+    if not goTo(0, routeLayerY, 0) then return false end
+  end
+  return goTo(0, 0, 0)
+end
+
+local function returnAlongRoute(x, y, z)
+  if routeActive then
+    if not goTo(0, routeLayerY, 0) then return false end
+    if not goTo(routeBranchX, routeLayerY, 0) then return false end
+  end
+  return goTo(x, y, z)
+end
+
+local function goHome(stayHome)
   local outX, outY, outZ, outFacing = pos.x, pos.y, pos.z, facing
   print("Heading home to unload/refuel (" .. distanceHome() .. " blocks)...")
-  if not goTo(0, 0, 0) then
+  if not followRouteHome() then
     print("Could not reach home; mining stopped.")
     return false
   end
@@ -373,8 +442,10 @@ local function goHome()
 
   refuel()
   faceDir(0) -- turn back to face the tunnel
+  if stayHome then return true end
+
   print("Heading back out to (" .. outX .. "," .. outY .. "," .. outZ .. ")...")
-  if not goTo(outX, outY, outZ) then
+  if not returnAlongRoute(outX, outY, outZ) then
     print("Could not return to the mining position.")
     return false
   end
@@ -510,49 +581,72 @@ local function checkAndMineVeins()
 end
 
 ------------------------------------------------------------
--- SQUARE STRIP MINING (serpentine rows spaced 3 apart)
+-- SQUARE STRIP MINING (right-running shaft with branches)
 ------------------------------------------------------------
 local function mineSquare(size, layerY)
-  local rowIndex = 0
-  for rowX = 0, size - 1, TUNNEL_SPACING do
-    local startZ, digFacing
-    if rowIndex % 2 == 0 then
-      startZ = 0
-      digFacing = 0
-    else
-      startZ = -size
-      digFacing = 2
+  if not goTo(0, layerY, 0) then
+    print("Could not reach the layer origin.")
+    return false
+  end
+
+  routeActive = true
+  routeLayerY = layerY
+  routeBranchX = 0
+  faceDir(1) -- main shaft runs right from home
+
+  for branchX = 0, size - 1, TUNNEL_SPACING do
+    -- Extend/traverse the main shaft to the next branch.
+    faceDir(1)
+    while pos.x < branchX do
+      routeBranchX = pos.x
+      ensureFuel()
+      ensureInventory()
+
+      if not forward() then
+        print("Main shaft blocked before branch x=" .. branchX ..
+              ". Clear the protected/unbreakable block and rerun.")
+        return false
+      end
+      routeBranchX = pos.x
+      checkAndMineVeins()
     end
 
-    print("Layer Y-rel " .. layerY .. ": row x=" .. rowX ..
-          " facing " .. digFacing)
-    if not goTo(rowX, layerY, startZ) then
-      print("Could not reach row start (" .. rowX .. "," .. layerY .. "," ..
-            startZ .. ").")
-      return false
-    end
-    faceDir(digFacing)
+    routeBranchX = branchX
+    print("Layer Y-rel " .. layerY .. ": mining branch x=" .. branchX)
+    faceDir(0) -- branches run forward, away from the chest
 
+    local branchLength = 0
     for i = 1, size do
       ensureFuel()
       ensureInventory()
 
       if not forward() then
-        print("Blocked and couldn't clear it at step " .. i ..
-              " of row x=" .. rowX)
+        print("Branch x=" .. branchX .. " blocked at step " .. i ..
+              "; returning to the main shaft.")
         break
       end
-
+      branchLength = branchLength + 1
       checkAndMineVeins()
     end
 
-    rowIndex = rowIndex + 1
+    -- Return through the cleared branch, preserving the shortest home route.
+    faceDir(2)
+    for _ = 1, branchLength do
+      ensureFuel()
+      ensureInventory()
+      if not forward() then
+        print("Could not return along branch x=" .. branchX .. ".")
+        return false
+      end
+    end
+    faceDir(1)
   end
 
   if not goTo(0, layerY, 0) then
-    print("Could not return to layer origin.")
+    print("Could not return along the main shaft to the layer origin.")
     return false
   end
+  routeBranchX = 0
   faceDir(0)
   return true
 end
@@ -586,8 +680,13 @@ local function mineBand(size, firstRelY, lastRelY)
     layerY = nextY
   end
 
-  goHome()
-  print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
+  local reachedHome = goHome(true)
+  routeActive = false
+  if reachedHome then
+    print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
+  else
+    print("Mining stopped before the turtle could return home.")
+  end
 end
 
 ------------------------------------------------------------
@@ -603,8 +702,10 @@ else
   saveState()
 end
 
-write("Which ore's Y-band should it use? (e.g. gold, diamond, coal) ")
+write("Which ore's Y-band? (e.g. coal, diamond, ancient debris) ")
 local bandOre = read():lower()
+bandOre = bandOre:match("^%s*(.-)%s*$")
+bandOre = BAND_ALIASES[bandOre] or bandOre
 
 local band = ORE_BANDS[bandOre]
 if band then
@@ -614,6 +715,13 @@ if band then
 else
   print("No Y range is configured for " .. bandOre ..
         "; it will mine a single square at the current Y.")
+end
+
+if bandOre == "allthemodium" then
+  print("Note: turtles cannot harvest Allthemodium ore in ATM10.")
+  print("It will leave those blocks intact for you to mine manually.")
+elseif bandOre == "vibranium" or bandOre == "unobtainium" then
+  print("That ATM metal does not spawn in the Mining Dimension and is player-only.")
 end
 
 write("What is the turtle's current world Y level? ")
@@ -658,13 +766,15 @@ local layers = 1
 if band then
   layers = math.floor(math.abs(firstWorldY - lastWorldY) / TUNNEL_SPACING) + 1
 end
-local estimatedTravel = (rows * size * layers) + math.abs(firstRelY - pos.y) +
+local estimatedTravel = ((rows * size * 2 + size) * layers) +
+                        math.abs(firstRelY - pos.y) +
                         math.abs(lastRelY - firstRelY) + size
 local requiredStartupFuel = estimatedTravel + MIN_FUEL_BUFFER
 local startupFuel = turtle.getFuelLevel()
 
-print("Plan: " .. size .. "x" .. size .. " squares, " .. rows ..
-      " tunnels/layer, ~" .. layers .. " layer(s).")
+print("Plan: right-running main shaft with " .. rows ..
+      " branches/layer, each " .. size .. " blocks long, ~" ..
+      layers .. " layer(s).")
 
 if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
   if distanceHome() ~= 0 then
