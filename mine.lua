@@ -12,15 +12,16 @@
   SETUP (do this before running):
   1. Place the turtle at your dock -- this spot becomes "home" (0,0,0).
   2. Put a chest directly BEHIND the turtle (opposite the tunnel
-     direction) and stock it with coal/charcoal. This one chest supplies
-     fuel and receives mined ore. The script always leaves at least one
-     coal in it for the next run. Put the coal in the chest's first slot
-     so the turtle pulls fuel instead of deposited ore.
+     direction) and stock it with fuel. This one chest supplies fuel and
+     receives mined ore. Put the same fuel type used in turtle slot 1 in
+     the chest's first occupied slot. One item remains there so dumped
+     blocks cannot take over the fuel slot.
   3. If you also have an RF/FE charging-station peripheral wired up next
      to the dock (e.g. the "Turtle Charging Station" mod), the script
      finds and uses that automatically.
-  4. Manually put a stack of coal/charcoal in inventory slot 1 before the
-     first run, so freshly mined ore never lands in the fuel slot.
+  4. Put your chosen burnable fuel (coal, lignite coal, etc.) in turtle
+     inventory slot 1. The script only refuels with that exact item type
+     and always keeps one item there to reserve the turtle slot.
   5. Face the turtle down the tunnel direction you want it to dig --
      i.e. AWAY from the drop-off chest -- before the first run. Whatever
      direction it's facing the very first time you run "mine" becomes
@@ -34,6 +35,7 @@
 local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 200       -- extra fuel kept in reserve on top of the calculated trip home
 local REFUEL_BELOW    = 1000      -- skip refueling when at or above this fuel level
+local REFUEL_TARGET   = 5000      -- stop consuming fuel after reaching this level
 local DROP_OFF_HOME   = true      -- dump all mined blocks into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
 local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
@@ -275,17 +277,63 @@ local function findChargingPeripheral()
   return nil
 end
 
-local function countChestCoal()
+local function firstChestItem()
   local chest = peripheral.wrap("front")
-  if not chest or type(chest.list) ~= "function" then return nil end
+  if not chest or type(chest.list) ~= "function" then
+    return nil, "Unable to inspect the shared chest."
+  end
 
-  local total = 0
-  for _, item in pairs(chest.list()) do
-    if item.name and item.name:lower():find("coal", 1, true) then
-      total = total + item.count
+  local firstSlot = nil
+  local firstItem = nil
+  for slot, item in pairs(chest.list()) do
+    if firstSlot == nil or slot < firstSlot then
+      firstSlot = slot
+      firstItem = item
     end
   end
-  return total
+  return firstItem
+end
+
+local function ensureReservedFuel(suck)
+  turtle.select(1)
+  local item = turtle.getItemDetail(1)
+
+  if item then
+    if not turtle.refuel(0) then
+      print("Slot 1 contains " .. item.name .. ", which is not burnable fuel.")
+      return nil
+    end
+    return item.name
+  end
+
+  local chestItem, chestError = firstChestItem()
+  if chestError then
+    print(chestError)
+    return nil
+  elseif not chestItem then
+    print("Slot 1 and the shared chest are both empty.")
+    return nil
+  end
+
+  if chestItem.count < 2 then
+    print("Put at least two of the chosen fuel in the chest before starting.")
+    return nil
+  end
+
+  if not suck(1) then
+    print("Could not pull reserve fuel from the shared chest.")
+    return nil
+  end
+
+  item = turtle.getItemDetail(1)
+  if not item or not turtle.refuel(0) then
+    if item then turtle.drop() end
+    print("The chest's first item is not burnable fuel.")
+    return nil
+  end
+
+  print("Reserved " .. item.name .. " in turtle slot 1.")
+  return item.name
 end
 
 local function refuel()
@@ -297,55 +345,57 @@ local function refuel()
   if REFUEL_FROM == "below" then suck = turtle.suckDown
   elseif REFUEL_FROM == "above" then suck = turtle.suckUp end
 
+  local fuelName = ensureReservedFuel(suck)
+  if not fuelName then return end
+
+  local target = math.min(REFUEL_TARGET, turtle.getFuelLimit())
+
   if charger then
-    print("Found a charging peripheral, waiting for full fuel...")
-    local limit = turtle.getFuelLimit()
-    while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < limit do
+    print("Found a charging peripheral, waiting for " .. target .. " fuel...")
+    while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < target do
       sleep(2)
     end
     print("Charged via peripheral.")
-
-    if turtle.getItemCount(1) == 0 then
-      local chestCoal = countChestCoal()
-      if chestCoal and chestCoal > 1 then
-        suck(1)
-      else
-        print("Warning: no reserve fuel could be kept in slot 1.")
-      end
-    end
     return
   end
 
-  -- Keep at least one fuel item in slot 1 and burn only additional items.
+  -- Burn only the exact fuel type reserved in slot 1 and always keep one.
   local pulled = 0
   local burned = 0
   while turtle.getFuelLevel() ~= "unlimited" and
-        turtle.getFuelLevel() < turtle.getFuelLimit() do
+        turtle.getFuelLevel() < target do
     while turtle.getItemCount(1) <= 1 do
-      local chestCoal = countChestCoal()
-      if chestCoal == nil then
-        print("Unable to inspect the shared chest for coal.")
+      local chestItem, chestError = firstChestItem()
+      if chestError then
+        print(chestError)
         return
-      elseif chestCoal <= 1 then
-        print("Keeping the last coal in the shared chest.")
+      elseif not chestItem or chestItem.name ~= fuelName then
+        print("No more " .. fuelName .. " at the front of the shared chest.")
+        print("Keeping the last one in turtle slot 1.")
         print("Burned " .. burned .. " fuel item(s). Fuel: " ..
               tostring(turtle.getFuelLevel()))
         return
       end
 
+      if chestItem.count <= 1 then
+        print("Keeping one " .. fuelName .. " in the chest's first slot.")
+        print("Keeping one more in turtle slot 1.")
+        return
+      end
+
+      local before = turtle.getItemCount(1)
       if not suck(1) then
-        print("Could not pull coal from the shared chest.")
+        print("Could not pull " .. fuelName .. " from the shared chest.")
         print("Burned " .. burned .. " fuel item(s). Fuel: " ..
               tostring(turtle.getFuelLevel()))
+        return
+      end
+
+      if turtle.getItemCount(1) <= before then
+        print("Pulled item did not stack with slot 1; stopping safely.")
         return
       end
       pulled = pulled + 1
-
-      if not turtle.refuel(0) then
-        turtle.drop()
-        print("Put coal in the first slot of the shared chest.")
-        return
-      end
     end
 
     if not turtle.refuel(1) then
@@ -355,7 +405,8 @@ local function refuel()
     burned = burned + 1
   end
   print("Pulled " .. pulled .. " and burned " .. burned ..
-        " fuel item(s). Fuel: " .. tostring(turtle.getFuelLevel()))
+        " " .. fuelName .. " item(s). Fuel: " ..
+        tostring(turtle.getFuelLevel()))
 end
 
 local function refuelIfNeeded()
