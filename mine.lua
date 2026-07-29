@@ -33,6 +33,7 @@
 ------------------------------------------------------------
 local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
+local REFUEL_BELOW    = 1000      -- skip refueling when at or above this fuel level
 local DROP_OFF_HOME   = true      -- dump all mined blocks into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
 local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
@@ -357,6 +358,20 @@ local function refuel()
         " fuel item(s). Fuel: " .. tostring(turtle.getFuelLevel()))
 end
 
+local function refuelIfNeeded()
+  local fuel = turtle.getFuelLevel()
+  if fuel == "unlimited" then
+    print("Fuel is unlimited; skipping refuel.")
+    return
+  end
+  if fuel >= REFUEL_BELOW then
+    print("Fuel is " .. fuel .. " (threshold " .. REFUEL_BELOW ..
+          "); skipping refuel.")
+    return
+  end
+  refuel()
+end
+
 ------------------------------------------------------------
 -- NAVIGATE HOME AND BACK OUT AGAIN
 ------------------------------------------------------------
@@ -441,7 +456,7 @@ local function goHome(stayHome)
     return false
   end
 
-  refuel()
+  refuelIfNeeded()
   faceDir(0) -- turn back to face the tunnel
   if stayHome then return true end
 
@@ -789,17 +804,13 @@ local layers = 1
 if band then
   layers = math.floor(math.abs(firstWorldY - lastWorldY) / TUNNEL_SPACING) + 1
 end
-local estimatedTravel = ((rows * size * 2 + size) * layers) +
-                        math.abs(firstRelY - pos.y) +
-                        math.abs(lastRelY - firstRelY) + size
-local requiredStartupFuel = estimatedTravel + MIN_FUEL_BUFFER
 local startupFuel = turtle.getFuelLevel()
 
 print("Plan: right-running main shaft with " .. rows ..
       " branches/layer, each " .. size .. " blocks long, ~" ..
       layers .. " layer(s).")
 
-if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
+if startupFuel ~= "unlimited" and startupFuel < REFUEL_BELOW then
   if distanceHome() ~= 0 then
     print("Not enough fuel for the planned run, and the turtle is away from home.")
     return
@@ -807,7 +818,7 @@ if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
 
   print("Fuel is low; checking the shared chest behind the turtle...")
   faceDir(2)
-  refuel()
+  refuelIfNeeded()
   faceDir(0)
   startupFuel = turtle.getFuelLevel()
 
