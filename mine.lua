@@ -1,12 +1,12 @@
 --[[
   ATM10 Mining Dimension Ore Turtle
   ----------------------------------
-  - Prompts you for what block to mine and how far to tunnel
-  - Strip-mines a single tunnel, checking up/down/left/right for the
-    target ore and grabbing it, discarding everything else
-  - Tracks its own position via dead-reckoning (no GPS needed)
-  - Auto-returns to the dock and refuels before it runs out of gas,
-    then resumes exactly where it left off
+  - Asks which ore's Y-band to use, the turtle's world Y, and square size
+  - Strip-mines an N×N area with parallel tunnels spaced 3 blocks apart
+  - Collects all valuable ores (not only the selected band ore)
+  - Follows connected ore veins (capped at 128 blocks) then resumes
+  - After each square, descends 3 blocks and repeats through the band
+  - Tracks position via dead-reckoning and auto-returns to refuel/unload
 
   SETUP (do this before running):
   1. Place the turtle at your dock -- this spot becomes "home" (0,0,0).
@@ -32,9 +32,11 @@
 ------------------------------------------------------------
 local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
-local DROP_OFF_HOME   = true      -- dump ore into the chest behind the dock on every return
+local DROP_OFF_HOME   = true      -- dump valuables into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
 local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
+local TUNNEL_SPACING  = 3         -- blocks between parallel tunnels / between layers
+local VEIN_CAP        = 128       -- max blocks to follow in a single connected vein
 
 -- ATM10 Mining Dimension ore Y-bands (from AllTheMods' own ore distribution chart)
 local ORE_BANDS = {
@@ -56,6 +58,32 @@ local ORE_BANDS = {
   tin          = {-62, 181},
   zinc         = {-62, 128},
   lead         = {-62, 34},
+}
+
+-- Known tunnel spoil discarded underground. Everything else is kept.
+local SPOIL_NAMES = {
+  ["minecraft:cobblestone"] = true,
+  ["minecraft:cobbled_deepslate"] = true,
+  ["minecraft:dirt"] = true,
+  ["minecraft:coarse_dirt"] = true,
+  ["minecraft:gravel"] = true,
+  ["minecraft:sand"] = true,
+  ["minecraft:red_sand"] = true,
+  ["minecraft:netherrack"] = true,
+  ["minecraft:basalt"] = true,
+  ["minecraft:smooth_basalt"] = true,
+  ["minecraft:tuff"] = true,
+  ["minecraft:calcite"] = true,
+  ["minecraft:diorite"] = true,
+  ["minecraft:andesite"] = true,
+  ["minecraft:granite"] = true,
+  ["minecraft:stone"] = true,
+  ["minecraft:deepslate"] = true,
+  ["minecraft:blackstone"] = true,
+  ["minecraft:magma_block"] = true,
+  ["minecraft:soul_sand"] = true,
+  ["minecraft:soul_soil"] = true,
+  ["minecraft:end_stone"] = true,
 }
 
 ------------------------------------------------------------
@@ -123,6 +151,21 @@ local function forward()
   return false
 end
 
+local function back()
+  if turtle.back() then
+    pos.x = pos.x - DX[facing + 1]
+    pos.z = pos.z - DZ[facing + 1]
+    saveState()
+    return true
+  end
+
+  -- Fallback if something is blocking the rear
+  faceDir((facing + 2) % 4)
+  local ok = forward()
+  faceDir((facing + 2) % 4)
+  return ok
+end
+
 local function up()
   while turtle.detectUp() do
     if not turtle.digUp() then break end
@@ -150,25 +193,80 @@ local function down()
 end
 
 ------------------------------------------------------------
--- HELPERS
+-- VALUABLE / SPOIL DETECTION
 ------------------------------------------------------------
-local function distanceHome()
-  return math.abs(pos.x) + math.abs(pos.y) + math.abs(pos.z)
+local function isKeepSlot(slot)
+  for _, k in ipairs(KEEP_SLOTS) do
+    if slot == k then return true end
+  end
+  return false
 end
 
-local function isTarget(name, target)
+local function hasOreTag(tags)
+  if not tags then return false end
+  for tag, _ in pairs(tags) do
+    local t = tostring(tag):lower()
+    if t == "c:ores" or t == "forge:ores" or t == "c:ore" or t == "forge:ore" then
+      return true
+    end
+    if t:find("ores/", 1, true) or t:find("/ores", 1, true) then
+      return true
+    end
+    if t:match("ores$") or t:match(":ore$") then
+      return true
+    end
+  end
+  return false
+end
+
+local function isValuableBlock(data)
+  if not data or not data.name then return false end
+  local name = data.name:lower()
+
+  if name:find("ancient_debris", 1, true) then return true end
+  if hasOreTag(data.tags) then return true end
+  if name:find("_ore", 1, true) or name:find(":ore_", 1, true) then return true end
+  if name:match("ore$") then return true end
+  return false
+end
+
+local function isSpoil(name)
   if not name then return false end
-  return string.find(name:lower(), target, 1, true) ~= nil
+  local n = name:lower()
+  if SPOIL_NAMES[n] then return true end
+
+  -- Keep anything that looks like ore / valuable drops.
+  if n:find("ore", 1, true) or n:find("raw_", 1, true) then return false end
+  if n:find("ancient_debris", 1, true) then return false end
+  if n:find("diamond", 1, true) or n:find("emerald", 1, true) then return false end
+  if n:find("lapis", 1, true) or n:find("redstone", 1, true) then return false end
+  if n:find("coal", 1, true) or n:find("quartz", 1, true) then return false end
+  if n:find("allthemodium", 1, true) or n:find("vibranium", 1, true) then return false end
+  if n:find("unobtainium", 1, true) then return false end
+
+  if n:find("cobble", 1, true) then return true end
+  if n:find("dirt", 1, true) then return true end
+  if n:find("gravel", 1, true) then return true end
+  if n:find("sand", 1, true) and not n:find("soul_sand", 1, true) then return true end
+  if n:find("netherrack", 1, true) then return true end
+  if n:find("basalt", 1, true) then return true end
+  if n:find("tuff", 1, true) then return true end
+  if n == "minecraft:stone" or n == "minecraft:deepslate" then return true end
+  if n:match("stone$") and not n:find("redstone", 1, true) then return true end
+  return false
 end
 
--- Void everything that isn't fuel or the target ore
-local function cleanInventory(target)
+local function isValuableItem(item)
+  if not item or not item.name then return false end
+  return not isSpoil(item.name)
+end
+
+-- Void known spoil; keep fuel slot and valuables
+local function cleanInventory()
   for slot = 1, 16 do
-    local skip = false
-    for _, k in ipairs(KEEP_SLOTS) do if slot == k then skip = true end end
-    if not skip then
+    if not isKeepSlot(slot) then
       local item = turtle.getItemDetail(slot)
-      if item and not isTarget(item.name, target) then
+      if item and isSpoil(item.name) then
         turtle.select(slot)
         turtle.dropDown()
       end
@@ -177,23 +275,12 @@ local function cleanInventory(target)
   turtle.select(1)
 end
 
--- Check up/down/left/right for the target ore and mine it if found
-local function checkSides(target)
-  local ok, data = turtle.inspectUp()
-  if ok and isTarget(data.name, target) then turtle.digUp() end
-
-  ok, data = turtle.inspectDown()
-  if ok and isTarget(data.name, target) then turtle.digDown() end
-
-  turnLeft()
-  ok, data = turtle.inspect()
-  if ok and isTarget(data.name, target) then turtle.dig() end
-  turnRight()
-
-  turnRight()
-  ok, data = turtle.inspect()
-  if ok and isTarget(data.name, target) then turtle.dig() end
-  turnLeft()
+local function freeSlots()
+  local free = 0
+  for slot = 1, 16 do
+    if turtle.getItemCount(slot) == 0 then free = free + 1 end
+  end
+  return free
 end
 
 ------------------------------------------------------------
@@ -233,8 +320,8 @@ local function refuel()
 
   if charger then
     print("Found a charging peripheral, waiting for full fuel...")
-    local target = turtle.getFuelLimit()
-    while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < target do
+    local limit = turtle.getFuelLimit()
+    while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < limit do
       sleep(2)
     end
     print("Charged via peripheral.")
@@ -295,6 +382,10 @@ end
 ------------------------------------------------------------
 -- NAVIGATE HOME AND BACK OUT AGAIN
 ------------------------------------------------------------
+local function distanceHome()
+  return math.abs(pos.x) + math.abs(pos.y) + math.abs(pos.z)
+end
+
 local function goTo(x, y, z)
   if pos.y < y then
     while pos.y < y do if not up() then return false end end
@@ -321,19 +412,21 @@ local function goTo(x, y, z)
   return true
 end
 
-local function goHome(target)
+local function goHome()
   local outX, outY, outZ, outFacing = pos.x, pos.y, pos.z, facing
-  print("Heading home to refuel (" .. distanceHome() .. " blocks)...")
+  print("Heading home to unload/refuel (" .. distanceHome() .. " blocks)...")
   goTo(0, 0, 0)
   faceDir(0) -- face 0 = the tunnel direction, same way it started
   faceDir(2) -- turn around 180 to face the shared chest
 
   if DROP_OFF_HOME then
     for slot = 1, 16 do
-      local item = turtle.getItemDetail(slot)
-      if item and isTarget(item.name, target) then
-        turtle.select(slot)
-        turtle.drop()
+      if not isKeepSlot(slot) then
+        local item = turtle.getItemDetail(slot)
+        if item and isValuableItem(item) then
+          turtle.select(slot)
+          turtle.drop()
+        end
       end
     end
     turtle.select(1)
@@ -346,34 +439,212 @@ local function goHome(target)
   faceDir(outFacing)
 end
 
+local function ensureFuel()
+  local fuel = turtle.getFuelLevel()
+  if fuel ~= "unlimited" and fuel <= distanceHome() + MIN_FUEL_BUFFER then
+    goHome()
+  end
+end
+
+local function ensureInventory()
+  if freeSlots() <= 1 then
+    print("Inventory nearly full, heading home to drop off.")
+    goHome()
+  end
+end
+
 ------------------------------------------------------------
--- MAIN MINING LOOP
+-- VEIN MINING (capped DFS with backtracking)
 ------------------------------------------------------------
-local function mine(target, length)
-  for i = 1, length do
-    local costHome = distanceHome() + 1
-    local fuel = turtle.getFuelLevel()
-    if fuel ~= "unlimited" and fuel <= costHome + MIN_FUEL_BUFFER then
-      goHome(target)
+local veinCount = 0
+local visited = {}
+
+local function posKey(x, y, z)
+  return x .. "," .. y .. "," .. z
+end
+
+local function scanVein()
+  local exploreVein
+
+  local function tryHorizontal()
+    if veinCount >= VEIN_CAP then return end
+    ensureFuel()
+    ensureInventory()
+
+    local ok, data = turtle.inspect()
+    if not (ok and isValuableBlock(data)) then return end
+
+    local nx = pos.x + DX[facing + 1]
+    local nz = pos.z + DZ[facing + 1]
+    local key = posKey(nx, pos.y, nz)
+    if visited[key] then return end
+    visited[key] = true
+
+    digForward()
+    if not forward() then return end
+    veinCount = veinCount + 1
+    exploreVein()
+    back()
+  end
+
+  local function tryUp()
+    if veinCount >= VEIN_CAP then return end
+    ensureFuel()
+    ensureInventory()
+
+    local ok, data = turtle.inspectUp()
+    if not (ok and isValuableBlock(data)) then return end
+
+    local key = posKey(pos.x, pos.y + 1, pos.z)
+    if visited[key] then return end
+    visited[key] = true
+
+    while turtle.detectUp() do
+      if not turtle.digUp() then break end
+      sleep(0.4)
+    end
+    if not up() then return end
+    veinCount = veinCount + 1
+    exploreVein()
+    down()
+  end
+
+  local function tryDown()
+    if veinCount >= VEIN_CAP then return end
+    ensureFuel()
+    ensureInventory()
+
+    local ok, data = turtle.inspectDown()
+    if not (ok and isValuableBlock(data)) then return end
+
+    local key = posKey(pos.x, pos.y - 1, pos.z)
+    if visited[key] then return end
+    visited[key] = true
+
+    while turtle.detectDown() do
+      if not turtle.digDown() then break end
+      sleep(0.4)
+    end
+    if not down() then return end
+    veinCount = veinCount + 1
+    exploreVein()
+    up()
+  end
+
+  exploreVein = function()
+    local startFacing = facing
+    tryUp()
+    tryDown()
+
+    for _ = 1, 4 do
+      tryHorizontal()
+      turnRight()
+    end
+    faceDir(startFacing)
+  end
+
+  exploreVein()
+end
+
+local function checkAndMineVeins()
+  local returnX, returnY, returnZ, returnFacing = pos.x, pos.y, pos.z, facing
+  veinCount = 0
+  visited = {}
+  visited[posKey(pos.x, pos.y, pos.z)] = true
+
+  scanVein()
+
+  if pos.x ~= returnX or pos.y ~= returnY or pos.z ~= returnZ then
+    goTo(returnX, returnY, returnZ)
+  end
+  faceDir(returnFacing)
+
+  if veinCount >= VEIN_CAP then
+    print("Vein cap (" .. VEIN_CAP .. ") reached; resuming tunnel.")
+  elseif veinCount > 0 then
+    print("Mined " .. veinCount .. " connected ore block(s).")
+  end
+end
+
+------------------------------------------------------------
+-- SQUARE STRIP MINING (serpentine rows spaced 3 apart)
+------------------------------------------------------------
+local function mineSquare(size, layerY)
+  local rowIndex = 0
+  for rowX = 0, size - 1, TUNNEL_SPACING do
+    local startZ, digFacing
+    if rowIndex % 2 == 0 then
+      startZ = 0
+      digFacing = 0
+    else
+      startZ = -size
+      digFacing = 2
     end
 
-    if not forward() then
-      print("Blocked and couldn't clear it, stopping at block " .. i)
+    print("Layer Y-rel " .. layerY .. ": row x=" .. rowX ..
+          " facing " .. digFacing)
+    if not goTo(rowX, layerY, startZ) then
+      print("Could not reach row start (" .. rowX .. "," .. layerY .. "," ..
+            startZ .. ").")
+      return false
+    end
+    faceDir(digFacing)
+
+    for i = 1, size do
+      ensureFuel()
+      ensureInventory()
+
+      if not forward() then
+        print("Blocked and couldn't clear it at step " .. i ..
+              " of row x=" .. rowX)
+        break
+      end
+
+      checkAndMineVeins()
+      cleanInventory()
+    end
+
+    rowIndex = rowIndex + 1
+  end
+
+  if not goTo(0, layerY, 0) then
+    print("Could not return to layer origin.")
+    return false
+  end
+  faceDir(0)
+  return true
+end
+
+local function mineBand(size, firstRelY, lastRelY)
+  local layerY = firstRelY
+  local step = -TUNNEL_SPACING
+
+  if lastRelY > firstRelY then
+    step = TUNNEL_SPACING
+  end
+
+  while true do
+    print("Mining " .. size .. "x" .. size .. " square at relative Y" .. layerY)
+
+    if not mineSquare(size, layerY) then
+      print("Stopping early due to navigation failure.")
       break
     end
 
-    checkSides(target)
-    cleanInventory(target)
+    if layerY == lastRelY then break end
 
-    local free = 0
-    for slot = 1, 16 do if turtle.getItemCount(slot) == 0 then free = free + 1 end end
-    if free <= 1 then
-      print("Inventory nearly full, heading home to drop off.")
-      goHome(target)
+    local nextY = layerY + step
+    if step < 0 and nextY < lastRelY then
+      nextY = lastRelY
+    elseif step > 0 and nextY > lastRelY then
+      nextY = lastRelY
     end
+
+    if nextY == layerY then break end
+    layerY = nextY
   end
 
-  goHome(target)
+  goHome()
   print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
 end
 
@@ -382,20 +653,25 @@ end
 ------------------------------------------------------------
 local resumed = loadState()
 if resumed then
-  print("Loaded saved position: (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. "), facing " .. facing)
+  print("Loaded saved position: (" .. pos.x .. "," .. pos.y .. "," .. pos.z ..
+        "), facing " .. facing)
   print("Distance from home: " .. distanceHome())
 else
   print("No saved position found -- treating current spot as home (0,0,0).")
   saveState()
 end
 
-write("What ore/block do you want to mine? (e.g. gold, diamond, allthemodium) ")
-local target = read():lower()
+write("Which ore's Y-band should it use? (e.g. gold, diamond, coal) ")
+local bandOre = read():lower()
 
-if ORE_BANDS[target] then
-  local band = ORE_BANDS[target]
-  print(target .. " spawns between Y" .. band[1] .. " and Y" .. band[2] ..
+local band = ORE_BANDS[bandOre]
+if band then
+  print(bandOre .. " spawns between Y" .. band[1] .. " and Y" .. band[2] ..
         " in the Mining Dimension.")
+  print("The turtle will mine ALL valuables while covering that Y range.")
+else
+  print("No Y range is configured for " .. bandOre ..
+        "; it will mine a single square at the current Y.")
 end
 
 write("What is the turtle's current world Y level? ")
@@ -405,33 +681,52 @@ while not currentWorldY do
   currentWorldY = tonumber(read())
 end
 
-write("How many blocks forward should it tunnel? ")
-local length = tonumber(read())
-if not length then
-  print("Not a number, defaulting to 64.")
-  length = 64
+write("Square size (side length in blocks)? ")
+local size = tonumber(read())
+if not size or size < 1 then
+  print("Not a valid size, defaulting to 16.")
+  size = 16
 end
+size = math.floor(size)
 
-local targetWorldY = currentWorldY
-if ORE_BANDS[target] then
-  local band = ORE_BANDS[target]
+-- Convert absolute world Y into home-relative Y.
+local homeWorldY = currentWorldY - pos.y
+
+local firstWorldY = currentWorldY
+local lastWorldY = currentWorldY
+if band then
   if currentWorldY > band[2] then
-    targetWorldY = band[2]
+    firstWorldY = band[2]
   elseif currentWorldY < band[1] then
-    targetWorldY = band[1]
+    firstWorldY = band[1]
+  else
+    firstWorldY = currentWorldY
+  end
+  lastWorldY = band[1]
+  if firstWorldY < lastWorldY then
+    lastWorldY = band[2]
   end
 end
 
--- Convert the absolute world Y target into the script's home-relative Y.
-local homeWorldY = currentWorldY - pos.y
-local targetRelativeY = targetWorldY - homeWorldY
-local verticalTravel = math.abs(targetRelativeY - pos.y)
-local requiredStartupFuel = (verticalTravel * 2) + MIN_FUEL_BUFFER + 1
+local firstRelY = firstWorldY - homeWorldY
+local lastRelY = lastWorldY - homeWorldY
+
+local rows = math.floor((size - 1) / TUNNEL_SPACING) + 1
+local layers = 1
+if band then
+  layers = math.floor(math.abs(firstWorldY - lastWorldY) / TUNNEL_SPACING) + 1
+end
+local estimatedTravel = (rows * size * layers) + math.abs(firstRelY - pos.y) +
+                        math.abs(lastRelY - firstRelY) + size
+local requiredStartupFuel = estimatedTravel + MIN_FUEL_BUFFER
 local startupFuel = turtle.getFuelLevel()
+
+print("Plan: " .. size .. "x" .. size .. " squares, " .. rows ..
+      " tunnels/layer, ~" .. layers .. " layer(s).")
 
 if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
   if distanceHome() ~= 0 then
-    print("Not enough fuel to adjust Y safely, and the turtle is away from home.")
+    print("Not enough fuel for the planned run, and the turtle is away from home.")
     return
   end
 
@@ -441,24 +736,22 @@ if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
   faceDir(0)
   startupFuel = turtle.getFuelLevel()
 
-  if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
+  if startupFuel ~= "unlimited" and startupFuel <= MIN_FUEL_BUFFER then
     print("Unable to start: add more coal to the shared chest.")
     return
   end
 end
 
-if targetWorldY ~= currentWorldY then
-  print("Moving from world Y" .. currentWorldY .. " to Y" .. targetWorldY ..
-        " for " .. target .. "...")
-  if not goTo(pos.x, targetRelativeY, pos.z) then
-    print("Unable to reach the target Y level.")
+if firstWorldY ~= currentWorldY then
+  print("Moving from world Y" .. currentWorldY .. " to Y" .. firstWorldY ..
+        " for the " .. bandOre .. " band...")
+  if not goTo(pos.x, firstRelY, pos.z) then
+    print("Unable to reach the starting Y level.")
     return
   end
-elseif ORE_BANDS[target] then
+elseif band then
   print("Current Y" .. currentWorldY .. " is already in the target range.")
-else
-  print("No Y range is configured for " .. target .. "; using the current Y.")
 end
 
 print("Starting fuel: " .. tostring(turtle.getFuelLevel()))
-mine(target, length)
+mineBand(size, firstRelY, lastRelY)
