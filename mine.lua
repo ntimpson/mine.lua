@@ -3,7 +3,7 @@
   ----------------------------------
   - Asks which ore's Y-band to use, the turtle's world Y, and square size
   - Strip-mines an N×N area with parallel tunnels spaced 3 blocks apart
-  - Collects all valuable ores (not only the selected band ore)
+  - Collects every block it mines (not only the selected band ore)
   - Follows connected ore veins (capped at 128 blocks) then resumes
   - After each square, descends 3 blocks and repeats through the band
   - Tracks position via dead-reckoning and auto-returns to refuel/unload
@@ -32,7 +32,7 @@
 ------------------------------------------------------------
 local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
-local DROP_OFF_HOME   = true      -- dump valuables into the shared chest on every return
+local DROP_OFF_HOME   = true      -- dump all mined blocks into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
 local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
 local TUNNEL_SPACING  = 3         -- blocks between parallel tunnels / between layers
@@ -58,32 +58,6 @@ local ORE_BANDS = {
   tin          = {-62, 181},
   zinc         = {-62, 128},
   lead         = {-62, 34},
-}
-
--- Known tunnel spoil discarded underground. Everything else is kept.
-local SPOIL_NAMES = {
-  ["minecraft:cobblestone"] = true,
-  ["minecraft:cobbled_deepslate"] = true,
-  ["minecraft:dirt"] = true,
-  ["minecraft:coarse_dirt"] = true,
-  ["minecraft:gravel"] = true,
-  ["minecraft:sand"] = true,
-  ["minecraft:red_sand"] = true,
-  ["minecraft:netherrack"] = true,
-  ["minecraft:basalt"] = true,
-  ["minecraft:smooth_basalt"] = true,
-  ["minecraft:tuff"] = true,
-  ["minecraft:calcite"] = true,
-  ["minecraft:diorite"] = true,
-  ["minecraft:andesite"] = true,
-  ["minecraft:granite"] = true,
-  ["minecraft:stone"] = true,
-  ["minecraft:deepslate"] = true,
-  ["minecraft:blackstone"] = true,
-  ["minecraft:magma_block"] = true,
-  ["minecraft:soul_sand"] = true,
-  ["minecraft:soul_soil"] = true,
-  ["minecraft:end_stone"] = true,
 }
 
 ------------------------------------------------------------
@@ -230,51 +204,6 @@ local function isValuableBlock(data)
   return false
 end
 
-local function isSpoil(name)
-  if not name then return false end
-  local n = name:lower()
-  if SPOIL_NAMES[n] then return true end
-
-  -- Keep anything that looks like ore / valuable drops.
-  if n:find("ore", 1, true) or n:find("raw_", 1, true) then return false end
-  if n:find("ancient_debris", 1, true) then return false end
-  if n:find("diamond", 1, true) or n:find("emerald", 1, true) then return false end
-  if n:find("lapis", 1, true) or n:find("redstone", 1, true) then return false end
-  if n:find("coal", 1, true) or n:find("quartz", 1, true) then return false end
-  if n:find("allthemodium", 1, true) or n:find("vibranium", 1, true) then return false end
-  if n:find("unobtainium", 1, true) then return false end
-
-  if n:find("cobble", 1, true) then return true end
-  if n:find("dirt", 1, true) then return true end
-  if n:find("gravel", 1, true) then return true end
-  if n:find("sand", 1, true) and not n:find("soul_sand", 1, true) then return true end
-  if n:find("netherrack", 1, true) then return true end
-  if n:find("basalt", 1, true) then return true end
-  if n:find("tuff", 1, true) then return true end
-  if n == "minecraft:stone" or n == "minecraft:deepslate" then return true end
-  if n:match("stone$") and not n:find("redstone", 1, true) then return true end
-  return false
-end
-
-local function isValuableItem(item)
-  if not item or not item.name then return false end
-  return not isSpoil(item.name)
-end
-
--- Void known spoil; keep fuel slot and valuables
-local function cleanInventory()
-  for slot = 1, 16 do
-    if not isKeepSlot(slot) then
-      local item = turtle.getItemDetail(slot)
-      if item and isSpoil(item.name) then
-        turtle.select(slot)
-        turtle.dropDown()
-      end
-    end
-  end
-  turtle.select(1)
-end
-
 local function freeSlots()
   local free = 0
   for slot = 1, 16 do
@@ -415,41 +344,55 @@ end
 local function goHome()
   local outX, outY, outZ, outFacing = pos.x, pos.y, pos.z, facing
   print("Heading home to unload/refuel (" .. distanceHome() .. " blocks)...")
-  goTo(0, 0, 0)
+  if not goTo(0, 0, 0) then
+    print("Could not reach home; mining stopped.")
+    return false
+  end
   faceDir(0) -- face 0 = the tunnel direction, same way it started
   faceDir(2) -- turn around 180 to face the shared chest
 
+  local unloadOk = true
   if DROP_OFF_HOME then
     for slot = 1, 16 do
       if not isKeepSlot(slot) then
         local item = turtle.getItemDetail(slot)
-        if item and isValuableItem(item) then
+        if item then
           turtle.select(slot)
-          turtle.drop()
+          if not turtle.drop() then unloadOk = false end
         end
       end
     end
     turtle.select(1)
   end
 
+  if not unloadOk then
+    print("The shared chest is full; mining stopped at home.")
+    faceDir(0)
+    return false
+  end
+
   refuel()
   faceDir(0) -- turn back to face the tunnel
   print("Heading back out to (" .. outX .. "," .. outY .. "," .. outZ .. ")...")
-  goTo(outX, outY, outZ)
+  if not goTo(outX, outY, outZ) then
+    print("Could not return to the mining position.")
+    return false
+  end
   faceDir(outFacing)
+  return true
 end
 
 local function ensureFuel()
   local fuel = turtle.getFuelLevel()
   if fuel ~= "unlimited" and fuel <= distanceHome() + MIN_FUEL_BUFFER then
-    goHome()
+    if not goHome() then error("Mining stopped safely.", 0) end
   end
 end
 
 local function ensureInventory()
   if freeSlots() <= 1 then
     print("Inventory nearly full, heading home to drop off.")
-    goHome()
+    if not goHome() then error("Mining stopped safely.", 0) end
   end
 end
 
@@ -601,7 +544,6 @@ local function mineSquare(size, layerY)
       end
 
       checkAndMineVeins()
-      cleanInventory()
     end
 
     rowIndex = rowIndex + 1
@@ -668,7 +610,7 @@ local band = ORE_BANDS[bandOre]
 if band then
   print(bandOre .. " spawns between Y" .. band[1] .. " and Y" .. band[2] ..
         " in the Mining Dimension.")
-  print("The turtle will mine ALL valuables while covering that Y range.")
+  print("The turtle will keep EVERY block and vein-mine all ores in that range.")
 else
   print("No Y range is configured for " .. bandOre ..
         "; it will mine a single square at the current Y.")
