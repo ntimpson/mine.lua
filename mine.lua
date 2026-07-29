@@ -32,7 +32,7 @@
 -- CONFIG
 ------------------------------------------------------------
 local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
-local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
+local MIN_FUEL_BUFFER = 200       -- extra fuel kept in reserve on top of the calculated trip home
 local REFUEL_BELOW    = 1000      -- skip refueling when at or above this fuel level
 local DROP_OFF_HOME   = true      -- dump all mined blocks into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
