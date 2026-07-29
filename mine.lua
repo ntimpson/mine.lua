@@ -6,6 +6,7 @@
   - Collects every block it mines (not only the selected band ore)
   - Follows connected ore veins (capped at 128 blocks) then resumes
   - After each square, descends 3 blocks and repeats through the band
+  - Returns home after every layer and waits for approval to continue
   - Tracks position via dead-reckoning and auto-returns to refuel/unload
 
   SETUP (do this before running):
@@ -664,10 +665,28 @@ local function mineBand(size, firstRelY, lastRelY)
 
     if not mineSquare(size, layerY) then
       print("Stopping early due to navigation failure.")
-      break
+      local reachedHome = goHome(true)
+      routeActive = false
+      if reachedHome then
+        print("Stopped safely at home.")
+      else
+        print("Mining stopped before the turtle could return home.")
+      end
+      return
     end
 
-    if layerY == lastRelY then break end
+    -- Every completed layer ends at home for unloading, refueling, and review.
+    local reachedHome = goHome(true)
+    routeActive = false
+    if not reachedHome then
+      print("Mining stopped before the turtle could return home.")
+      return
+    end
+
+    if layerY == lastRelY then
+      print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
+      return
+    end
 
     local nextY = layerY + step
     if step < 0 and nextY < lastRelY then
@@ -676,16 +695,20 @@ local function mineBand(size, firstRelY, lastRelY)
       nextY = lastRelY
     end
 
-    if nextY == layerY then break end
-    layerY = nextY
-  end
+    if nextY == layerY then
+      print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
+      return
+    end
 
-  local reachedHome = goHome(true)
-  routeActive = false
-  if reachedHome then
-    print("Done. Back at home, fuel: " .. tostring(turtle.getFuelLevel()))
-  else
-    print("Mining stopped before the turtle could return home.")
+    print("Layer complete. Turtle is unloaded and refueled at home.")
+    write("Press Enter for the next layer, or type q to stop: ")
+    local answer = read():lower()
+    if answer == "q" or answer == "quit" or answer == "stop" then
+      print("Stopped at home. Run mine again when ready.")
+      return
+    end
+
+    layerY = nextY
   end
 end
 
