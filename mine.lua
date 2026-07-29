@@ -296,14 +296,29 @@ end
 -- NAVIGATE HOME AND BACK OUT AGAIN
 ------------------------------------------------------------
 local function goTo(x, y, z)
-  if pos.y < y then while pos.y < y do up() end
-  elseif pos.y > y then while pos.y > y do down() end end
+  if pos.y < y then
+    while pos.y < y do if not up() then return false end end
+  elseif pos.y > y then
+    while pos.y > y do if not down() then return false end end
+  end
 
-  if pos.x < x then faceDir(1); while pos.x < x do forward() end
-  elseif pos.x > x then faceDir(3); while pos.x > x do forward() end end
+  if pos.x < x then
+    faceDir(1)
+    while pos.x < x do if not forward() then return false end end
+  elseif pos.x > x then
+    faceDir(3)
+    while pos.x > x do if not forward() then return false end end
+  end
 
-  if pos.z < z then faceDir(2); while pos.z < z do forward() end
-  elseif pos.z > z then faceDir(0); while pos.z > z do forward() end end
+  if pos.z < z then
+    faceDir(2)
+    while pos.z < z do if not forward() then return false end end
+  elseif pos.z > z then
+    faceDir(0)
+    while pos.z > z do if not forward() then return false end end
+  end
+
+  return true
 end
 
 local function goHome(target)
@@ -374,26 +389,20 @@ else
   saveState()
 end
 
-local startupFuel = turtle.getFuelLevel()
-if startupFuel ~= "unlimited" and startupFuel == 0 then
-  print("No fuel available at startup; checking the fuel chest...")
-  faceDir(2)
-  refuel()
-  faceDir(0)
-
-  if turtle.getFuelLevel() == 0 then
-    print("Unable to start: add at least three coal items to the shared chest.")
-    return
-  end
-end
-
 write("What ore/block do you want to mine? (e.g. gold, diamond, allthemodium) ")
 local target = read():lower()
 
 if ORE_BANDS[target] then
   local band = ORE_BANDS[target]
   print(target .. " spawns between Y" .. band[1] .. " and Y" .. band[2] ..
-        " in the Mining Dimension. Make sure the turtle is positioned there before continuing.")
+        " in the Mining Dimension.")
+end
+
+write("What is the turtle's current world Y level? ")
+local currentWorldY = tonumber(read())
+while not currentWorldY do
+  write("Please enter a number for the current Y level: ")
+  currentWorldY = tonumber(read())
 end
 
 write("How many blocks forward should it tunnel? ")
@@ -401,6 +410,54 @@ local length = tonumber(read())
 if not length then
   print("Not a number, defaulting to 64.")
   length = 64
+end
+
+local targetWorldY = currentWorldY
+if ORE_BANDS[target] then
+  local band = ORE_BANDS[target]
+  if currentWorldY > band[2] then
+    targetWorldY = band[2]
+  elseif currentWorldY < band[1] then
+    targetWorldY = band[1]
+  end
+end
+
+-- Convert the absolute world Y target into the script's home-relative Y.
+local homeWorldY = currentWorldY - pos.y
+local targetRelativeY = targetWorldY - homeWorldY
+local verticalTravel = math.abs(targetRelativeY - pos.y)
+local requiredStartupFuel = (verticalTravel * 2) + MIN_FUEL_BUFFER + 1
+local startupFuel = turtle.getFuelLevel()
+
+if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
+  if distanceHome() ~= 0 then
+    print("Not enough fuel to adjust Y safely, and the turtle is away from home.")
+    return
+  end
+
+  print("Fuel is low; checking the shared chest behind the turtle...")
+  faceDir(2)
+  refuel()
+  faceDir(0)
+  startupFuel = turtle.getFuelLevel()
+
+  if startupFuel ~= "unlimited" and startupFuel <= requiredStartupFuel then
+    print("Unable to start: add more coal to the shared chest.")
+    return
+  end
+end
+
+if targetWorldY ~= currentWorldY then
+  print("Moving from world Y" .. currentWorldY .. " to Y" .. targetWorldY ..
+        " for " .. target .. "...")
+  if not goTo(pos.x, targetRelativeY, pos.z) then
+    print("Unable to reach the target Y level.")
+    return
+  end
+elseif ORE_BANDS[target] then
+  print("Current Y" .. currentWorldY .. " is already in the target range.")
+else
+  print("No Y range is configured for " .. target .. "; using the current Y.")
 end
 
 print("Starting fuel: " .. tostring(turtle.getFuelLevel()))
