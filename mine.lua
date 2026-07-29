@@ -33,7 +33,7 @@
 ------------------------------------------------------------
 local REFUEL_FROM     = "below"   -- "front" | "below" | "above" -- where the fuel chest is
 local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
-local DROP_OFF_HOME   = true      -- dump ore into the chest in front of the dock on every return
+local DROP_OFF_HOME   = true      -- dump ore into the chest behind the dock on every return
 local STATE_FILE      = "turtle_state.txt"
 local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
 
@@ -213,6 +213,11 @@ end
 local function refuel()
   print("Refueling at home...")
   local charger = findChargingPeripheral()
+  turtle.select(1)
+
+  local suck = turtle.suck
+  if REFUEL_FROM == "below" then suck = turtle.suckDown
+  elseif REFUEL_FROM == "above" then suck = turtle.suckUp end
 
   if charger then
     print("Found a charging peripheral, waiting for full fuel...")
@@ -221,22 +226,36 @@ local function refuel()
       sleep(2)
     end
     print("Charged via peripheral.")
+
+    if turtle.getItemCount(1) == 0 and not suck(1) then
+      print("Warning: no reserve fuel could be kept in slot 1.")
+    end
     return
   end
 
-  -- fallback: pull and burn fuel items from a chest
-  turtle.select(1)
-  local suck = turtle.suck
-  if REFUEL_FROM == "below" then suck = turtle.suckDown
-  elseif REFUEL_FROM == "above" then suck = turtle.suckUp end
-
+  -- Keep at least one fuel item in slot 1 and burn only additional items.
   local pulled = 0
-  while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < turtle.getFuelLimit() do
-    if not suck(1) then break end
-    if not turtle.refuel(1) then break end
-    pulled = pulled + 1
+  local burned = 0
+  while turtle.getFuelLevel() ~= "unlimited" and
+        turtle.getFuelLevel() < turtle.getFuelLimit() do
+    while turtle.getItemCount(1) <= 1 do
+      if not suck(1) then
+        print("Fuel chest is empty; keeping the last fuel item in slot 1.")
+        print("Burned " .. burned .. " fuel item(s). Fuel: " ..
+              tostring(turtle.getFuelLevel()))
+        return
+      end
+      pulled = pulled + 1
+    end
+
+    if not turtle.refuel(1) then
+      print("Slot 1 does not contain valid turtle fuel.")
+      return
+    end
+    burned = burned + 1
   end
-  print("Burned " .. pulled .. " fuel item(s). Fuel: " .. tostring(turtle.getFuelLevel()))
+  print("Pulled " .. pulled .. " and burned " .. burned ..
+        " fuel item(s). Fuel: " .. tostring(turtle.getFuelLevel()))
 end
 
 ------------------------------------------------------------
@@ -319,6 +338,17 @@ if resumed then
 else
   print("No saved position found -- treating current spot as home (0,0,0).")
   saveState()
+end
+
+local startupFuel = turtle.getFuelLevel()
+if startupFuel ~= "unlimited" and startupFuel == 0 then
+  print("No fuel available at startup; checking the fuel chest...")
+  refuel()
+
+  if turtle.getFuelLevel() == 0 then
+    print("Unable to start: add at least two fuel items to the fuel chest.")
+    return
+  end
 end
 
 write("What ore/block do you want to mine? (e.g. gold, diamond, allthemodium) ")
