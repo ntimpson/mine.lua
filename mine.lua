@@ -15,11 +15,16 @@
      peripheral wired up next to the dock (e.g. the "Turtle Charging
      Station" mod), the script finds and uses that automatically instead
      and skips the chest entirely.
-  3. Put an empty chest directly IN FRONT of the turtle -- this is where
-     it dumps mined ore each time it comes home.
+  3. Put an empty chest directly BEHIND the turtle (opposite the tunnel
+     direction) -- this is where it dumps mined ore each time it comes
+     home. It turns around to face this chest specifically for drop-off,
+     then turns back around to head back out.
   4. Manually put a stack of coal/charcoal in inventory slot 1 before the
      first run, so freshly mined ore never lands in the fuel slot.
-  5. Face the turtle down the tunnel direction you want it to dig.
+  5. Face the turtle down the tunnel direction you want it to dig --
+     i.e. AWAY from the drop-off chest -- before the first run. Whatever
+     direction it's facing the very first time you run "mine" becomes
+     both "home" (0,0,0) and the tunnel direction for good.
   6. Run: mine
 ]]--
 
@@ -252,9 +257,10 @@ local function goHome(target)
   local outX, outY, outZ, outFacing = pos.x, pos.y, pos.z, facing
   print("Heading home to refuel (" .. distanceHome() .. " blocks)...")
   goTo(0, 0, 0)
-  faceDir(0)
+  faceDir(0) -- face 0 = the tunnel direction, same way it started
 
   if DROP_OFF_HOME then
+    faceDir(2) -- turn around 180 to face the chest behind the dock
     for slot = 1, 16 do
       local item = turtle.getItemDetail(slot)
       if item and isTarget(item.name, target) then
@@ -263,6 +269,7 @@ local function goHome(target)
       end
     end
     turtle.select(1)
+    faceDir(0) -- turn back to face the tunnel
   end
 
   refuel()
