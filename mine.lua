@@ -10,15 +10,14 @@
 
   SETUP (do this before running):
   1. Place the turtle at your dock -- this spot becomes "home" (0,0,0).
-  2. Put a chest of coal/charcoal directly BELOW the turtle. This is the
-     fallback fuel source. If you also have an RF/FE charging-station
-     peripheral wired up next to the dock (e.g. the "Turtle Charging
-     Station" mod), the script finds and uses that automatically instead
-     and skips the chest entirely.
-  3. Put an empty chest directly BEHIND the turtle (opposite the tunnel
-     direction) -- this is where it dumps mined ore each time it comes
-     home. It turns around to face this chest specifically for drop-off,
-     then turns back around to head back out.
+  2. Put a chest directly BEHIND the turtle (opposite the tunnel
+     direction) and stock it with coal/charcoal. This one chest supplies
+     fuel and receives mined ore. The script always leaves at least one
+     coal in it for the next run. Put the coal in the chest's first slot
+     so the turtle pulls fuel instead of deposited ore.
+  3. If you also have an RF/FE charging-station peripheral wired up next
+     to the dock (e.g. the "Turtle Charging Station" mod), the script
+     finds and uses that automatically.
   4. Manually put a stack of coal/charcoal in inventory slot 1 before the
      first run, so freshly mined ore never lands in the fuel slot.
   5. Face the turtle down the tunnel direction you want it to dig --
@@ -31,7 +30,7 @@
 ------------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------------
-local REFUEL_FROM     = "below"   -- "front" | "below" | "above" -- where the fuel chest is
+local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 50        -- extra fuel kept in reserve on top of the calculated trip home
 local DROP_OFF_HOME   = true      -- dump ore into the chest behind the dock on every return
 local STATE_FILE      = "turtle_state.txt"
@@ -210,6 +209,19 @@ local function findChargingPeripheral()
   return nil
 end
 
+local function countChestCoal()
+  local chest = peripheral.wrap("front")
+  if not chest or type(chest.list) ~= "function" then return nil end
+
+  local total = 0
+  for _, item in pairs(chest.list()) do
+    if item.name and item.name:lower():find("coal", 1, true) then
+      total = total + item.count
+    end
+  end
+  return total
+end
+
 local function refuel()
   print("Refueling at home...")
   local charger = findChargingPeripheral()
@@ -227,8 +239,13 @@ local function refuel()
     end
     print("Charged via peripheral.")
 
-    if turtle.getItemCount(1) == 0 and not suck(1) then
-      print("Warning: no reserve fuel could be kept in slot 1.")
+    if turtle.getItemCount(1) == 0 then
+      local chestCoal = countChestCoal()
+      if chestCoal and chestCoal > 1 then
+        suck(1)
+      else
+        print("Warning: no reserve fuel could be kept in slot 1.")
+      end
     end
     return
   end
@@ -239,13 +256,30 @@ local function refuel()
   while turtle.getFuelLevel() ~= "unlimited" and
         turtle.getFuelLevel() < turtle.getFuelLimit() do
     while turtle.getItemCount(1) <= 1 do
+      local chestCoal = countChestCoal()
+      if chestCoal == nil then
+        print("Unable to inspect the shared chest for coal.")
+        return
+      elseif chestCoal <= 1 then
+        print("Keeping the last coal in the shared chest.")
+        print("Burned " .. burned .. " fuel item(s). Fuel: " ..
+              tostring(turtle.getFuelLevel()))
+        return
+      end
+
       if not suck(1) then
-        print("Fuel chest is empty; keeping the last fuel item in slot 1.")
+        print("Could not pull coal from the shared chest.")
         print("Burned " .. burned .. " fuel item(s). Fuel: " ..
               tostring(turtle.getFuelLevel()))
         return
       end
       pulled = pulled + 1
+
+      if not turtle.refuel(0) then
+        turtle.drop()
+        print("Put coal in the first slot of the shared chest.")
+        return
+      end
     end
 
     if not turtle.refuel(1) then
@@ -277,9 +311,9 @@ local function goHome(target)
   print("Heading home to refuel (" .. distanceHome() .. " blocks)...")
   goTo(0, 0, 0)
   faceDir(0) -- face 0 = the tunnel direction, same way it started
+  faceDir(2) -- turn around 180 to face the shared chest
 
   if DROP_OFF_HOME then
-    faceDir(2) -- turn around 180 to face the chest behind the dock
     for slot = 1, 16 do
       local item = turtle.getItemDetail(slot)
       if item and isTarget(item.name, target) then
@@ -288,10 +322,10 @@ local function goHome(target)
       end
     end
     turtle.select(1)
-    faceDir(0) -- turn back to face the tunnel
   end
 
   refuel()
+  faceDir(0) -- turn back to face the tunnel
   print("Heading back out to (" .. outX .. "," .. outY .. "," .. outZ .. ")...")
   goTo(outX, outY, outZ)
   faceDir(outFacing)
@@ -343,10 +377,12 @@ end
 local startupFuel = turtle.getFuelLevel()
 if startupFuel ~= "unlimited" and startupFuel == 0 then
   print("No fuel available at startup; checking the fuel chest...")
+  faceDir(2)
   refuel()
+  faceDir(0)
 
   if turtle.getFuelLevel() == 0 then
-    print("Unable to start: add at least two fuel items to the fuel chest.")
+    print("Unable to start: add at least three coal items to the shared chest.")
     return
   end
 end
