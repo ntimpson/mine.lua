@@ -13,15 +13,13 @@
   1. Place the turtle at your dock -- this spot becomes "home" (0,0,0).
   2. Put a chest directly BEHIND the turtle (opposite the tunnel
      direction) and stock it with fuel. This one chest supplies fuel and
-     receives mined ore. Put the same fuel type used in turtle slot 1 in
-     the chest's first occupied slot. One item remains there so dumped
-     blocks cannot take over the fuel slot.
+     receives mined ore. CHEST SLOT 1 defines the fuel type. One item
+     remains there so dumped blocks cannot take over the fuel slot.
   3. If you also have an RF/FE charging-station peripheral wired up next
      to the dock (e.g. the "Turtle Charging Station" mod), the script
      finds and uses that automatically.
-  4. Put your chosen burnable fuel (coal, lignite coal, etc.) in turtle
-     inventory slot 1. The script only refuels with that exact item type
-     and always keeps one item there to reserve the turtle slot.
+  4. Put your chosen burnable fuel (coal, lignite coal, etc.) in chest
+     slot 1. The script keeps one matching item in turtle slot 1.
   5. Face the turtle down the tunnel direction you want it to dig --
      i.e. AWAY from the drop-off chest -- before the first run. Whatever
      direction it's facing the very first time you run "mine" becomes
@@ -277,63 +275,56 @@ local function findChargingPeripheral()
   return nil
 end
 
-local function firstChestItem()
+local function chestFuelItem()
   local chest = peripheral.wrap("front")
   if not chest or type(chest.list) ~= "function" then
     return nil, "Unable to inspect the shared chest."
   end
 
-  local firstSlot = nil
-  local firstItem = nil
-  for slot, item in pairs(chest.list()) do
-    if firstSlot == nil or slot < firstSlot then
-      firstSlot = slot
-      firstItem = item
-    end
-  end
-  return firstItem
+  return chest.list()[1]
 end
 
 local function ensureReservedFuel(suck)
   turtle.select(1)
-  local item = turtle.getItemDetail(1)
-
-  if item then
-    if not turtle.refuel(0) then
-      print("Slot 1 contains " .. item.name .. ", which is not burnable fuel.")
-      return nil
-    end
-    return item.name
-  end
-
-  local chestItem, chestError = firstChestItem()
+  local chestItem, chestError = chestFuelItem()
   if chestError then
     print(chestError)
     return nil
   elseif not chestItem then
-    print("Slot 1 and the shared chest are both empty.")
+    print("Put burnable fuel in chest slot 1.")
     return nil
   end
 
-  if chestItem.count < 2 then
-    print("Put at least two of the chosen fuel in the chest before starting.")
+  local fuelName = chestItem.name
+  local item = turtle.getItemDetail(1)
+
+  if item and item.name ~= fuelName then
+    if not turtle.drop() then
+      print("Could not clear turtle slot 1 into the shared chest.")
+      return nil
+    end
+    item = nil
+  end
+
+  if not item then
+    if chestItem.count < 2 then
+      print("Put at least two fuel items in chest slot 1 before starting.")
+      return nil
+    end
+    if not suck(1) then
+      print("Could not pull reserve fuel from chest slot 1.")
+      return nil
+    end
+    item = turtle.getItemDetail(1)
+  end
+
+  if not item or item.name ~= fuelName or not turtle.refuel(0) then
+    print("The item in chest slot 1 is not valid turtle fuel.")
     return nil
   end
 
-  if not suck(1) then
-    print("Could not pull reserve fuel from the shared chest.")
-    return nil
-  end
-
-  item = turtle.getItemDetail(1)
-  if not item or not turtle.refuel(0) then
-    if item then turtle.drop() end
-    print("The chest's first item is not burnable fuel.")
-    return nil
-  end
-
-  print("Reserved " .. item.name .. " in turtle slot 1.")
-  return item.name
+  print("Using chest slot 1 fuel: " .. fuelName)
+  return fuelName
 end
 
 local function refuel()
@@ -365,12 +356,12 @@ local function refuel()
   while turtle.getFuelLevel() ~= "unlimited" and
         turtle.getFuelLevel() < target do
     while turtle.getItemCount(1) <= 1 do
-      local chestItem, chestError = firstChestItem()
+      local chestItem, chestError = chestFuelItem()
       if chestError then
         print(chestError)
         return
       elseif not chestItem or chestItem.name ~= fuelName then
-        print("No more " .. fuelName .. " at the front of the shared chest.")
+        print("Chest slot 1 no longer contains " .. fuelName .. ".")
         print("Keeping the last one in turtle slot 1.")
         print("Burned " .. burned .. " fuel item(s). Fuel: " ..
               tostring(turtle.getFuelLevel()))
