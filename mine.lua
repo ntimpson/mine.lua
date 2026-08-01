@@ -815,8 +815,8 @@ else
 end
 
 if distanceHome() == 0 then
-  print("Checking the lava tank before starting...")
-  refuelFromLavaTank()
+  print("Checking fuel before starting...")
+  refuelIfNeeded()
 else
   print("Turtle is away from home; skipping the startup lava-tank check.")
 end
