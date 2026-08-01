@@ -1,7 +1,7 @@
 --[[
   ATM10 Mining Dimension Ore Turtle
   ----------------------------------
-  - Asks which ore's Y-band to use, the turtle's world Y, and square size
+  - Asks which top-down layer to start on, the ore Y-band, world Y, and square size
   - Mines a main shaft to the right with branches spaced 3 blocks apart
   - Collects every block it mines (not only the selected band ore)
   - Follows connected ore veins (capped at 128 blocks) then resumes
@@ -12,14 +12,13 @@
   SETUP (do this before running):
   1. Place the turtle at your dock -- this spot becomes "home" (0,0,0).
   2. Put a chest directly BEHIND the turtle (opposite the tunnel
-     direction) and stock it with fuel. This one chest supplies fuel and
-     receives mined ore. CHEST SLOT 1 defines the fuel type. One item
-     remains there so dumped blocks cannot take over the fuel slot.
-  3. If you also have an RF/FE charging-station peripheral wired up next
+     direction). This chest receives mined ore. Put one empty bucket in
+     CHEST SLOT 1 so dumped blocks cannot take over the bucket slot.
+  3. Put a bucket-fillable lava tank directly LEFT of the turtle while
+     it faces the tunnel. Keep this tank supplied with lava.
+  4. If you also have an RF/FE charging-station peripheral wired up next
      to the dock (e.g. the "Turtle Charging Station" mod), the script
      finds and uses that automatically.
-  4. Put your chosen burnable fuel (coal, lignite coal, etc.) in chest
-     slot 1. The script keeps one matching item in turtle slot 1.
   5. Face the turtle down the tunnel direction you want it to dig --
      i.e. AWAY from the drop-off chest -- before the first run. Whatever
      direction it's facing the very first time you run "mine" becomes
@@ -30,13 +29,12 @@
 ------------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------------
-local REFUEL_FROM     = "front"   -- shared fuel/drop-off chest behind home
 local MIN_FUEL_BUFFER = 200       -- extra fuel kept in reserve on top of the calculated trip home
 local REFUEL_BELOW    = 1000      -- skip refueling when at or above this fuel level
 local REFUEL_TARGET   = 5000      -- stop consuming fuel after reaching this level
 local DROP_OFF_HOME   = true      -- dump all mined blocks into the shared chest on every return
 local STATE_FILE      = "turtle_state.txt"
-local KEEP_SLOTS      = {1}       -- inventory slot(s) reserved for fuel, never touched/tossed
+local KEEP_SLOTS      = {1}       -- slot 1 holds the reusable lava bucket
 local TUNNEL_SPACING  = 3         -- blocks between parallel tunnels / between layers
 local VEIN_CAP        = 128       -- max blocks to follow in a single connected vein
 
@@ -62,6 +60,7 @@ local ORE_BANDS = {
   tin          = {-62, 181},
   zinc         = {-62, 128},
   lead         = {-62, 34},
+  prosperity   = {65, 249},
 }
 
 -- ATM progression ores are player-only in ATM10. Detect and preserve them.
@@ -75,6 +74,9 @@ local BAND_ALIASES = {
   ["ancient debris"] = "ancient_debris",
   ["ancientdebris"] = "ancient_debris",
   ["netherite"] = "ancient_debris",
+  ["prosperity shard"] = "prosperity",
+  ["prosperity_shard"] = "prosperity",
+  ["prosperity ore"] = "prosperity",
 }
 
 ------------------------------------------------------------
@@ -275,129 +277,110 @@ local function findChargingPeripheral()
   return nil
 end
 
-local function chestFuelItem()
-  local chest = peripheral.wrap("front")
-  if not chest or type(chest.list) ~= "function" then
-    return nil, "Unable to inspect the shared chest."
-  end
-
-  return chest.list()[1]
+local function isBucket(item)
+  return item and
+         (item.name == "minecraft:bucket" or item.name == "minecraft:lava_bucket")
 end
 
-local function ensureReservedFuel(suck)
+local function ensureLavaBucket()
+  faceDir(2) -- shared chest is behind the turtle's home direction
+
+  local slotOne = turtle.getItemDetail(1)
+  if not isBucket(slotOne) then
+    if slotOne then
+      turtle.select(1)
+      if not turtle.drop() then
+        print("Could not clear turtle slot 1 into the shared chest.")
+        return false
+      end
+    end
+
+    -- Reuse a bucket already carried in another inventory slot.
+    for slot = 2, 16 do
+      local item = turtle.getItemDetail(slot)
+      if isBucket(item) then
+        turtle.select(slot)
+        if turtle.transferTo(1, 1) then
+          return true
+        end
+      end
+    end
+
+    local chest = peripheral.wrap("front")
+    if not chest or type(chest.list) ~= "function" then
+      print("Unable to inspect the shared chest behind the turtle.")
+      return false
+    end
+
+    local chestBucket = chest.list()[1]
+    if not isBucket(chestBucket) then
+      print("Put an empty bucket in slot 1 of the shared chest.")
+      return false
+    end
+
+    turtle.select(1)
+    if not turtle.suck(1) or not isBucket(turtle.getItemDetail(1)) then
+      print("Could not pull the bucket from chest slot 1.")
+      return false
+    end
+  end
+
+  return true
+end
+
+local function refuelFromLavaTank(target)
+  if pos.x ~= 0 or pos.y ~= 0 or pos.z ~= 0 then
+    return false
+  end
+  if not ensureLavaBucket() then
+    faceDir(0)
+    return false
+  end
+
+  target = target or turtle.getFuelLimit()
+  faceDir(3) -- lava tank is left of the turtle's home direction
   turtle.select(1)
-  local chestItem, chestError = chestFuelItem()
-  if chestError then
-    print(chestError)
-    return nil
-  elseif not chestItem then
-    print("Put burnable fuel in chest slot 1.")
-    return nil
-  end
+  local burned = 0
 
-  local fuelName = chestItem.name
-  local item = turtle.getItemDetail(1)
-
-  if item and item.name ~= fuelName then
-    if not turtle.drop() then
-      print("Could not clear turtle slot 1 into the shared chest.")
-      return nil
+  while turtle.getFuelLevel() ~= "unlimited" and
+        turtle.getFuelLevel() < target do
+    local item = turtle.getItemDetail(1)
+    if item and item.name == "minecraft:bucket" then
+      if not turtle.place() then
+        print("The lava tank is empty or could not fill the bucket.")
+        break
+      end
+      item = turtle.getItemDetail(1)
     end
-    item = nil
-  end
 
-  if not item then
-    if chestItem.count < 2 then
-      print("Put at least two fuel items in chest slot 1 before starting.")
-      return nil
+    if not item or item.name ~= "minecraft:lava_bucket" or
+       not turtle.refuel(1) then
+      print("The tank did not provide a usable lava bucket.")
+      break
     end
-    if not suck(1) then
-      print("Could not pull reserve fuel from chest slot 1.")
-      return nil
-    end
-    item = turtle.getItemDetail(1)
+    burned = burned + 1
   end
 
-  if not item or item.name ~= fuelName or not turtle.refuel(0) then
-    print("The item in chest slot 1 is not valid turtle fuel.")
-    return nil
-  end
-
-  print("Using chest slot 1 fuel: " .. fuelName)
-  return fuelName
+  local fuel = turtle.getFuelLevel()
+  print("Burned " .. burned .. " lava bucket(s). Fuel: " .. tostring(fuel))
+  faceDir(0)
+  turtle.select(1)
+  return fuel == "unlimited" or fuel >= target
 end
 
 local function refuel()
-  print("Refueling at home...")
-  local charger = findChargingPeripheral()
-  turtle.select(1)
-
-  local suck = turtle.suck
-  if REFUEL_FROM == "below" then suck = turtle.suckDown
-  elseif REFUEL_FROM == "above" then suck = turtle.suckUp end
-
-  local fuelName = ensureReservedFuel(suck)
-  if not fuelName then return end
-
+  print("Refueling from the lava tank at home...")
   local target = math.min(REFUEL_TARGET, turtle.getFuelLimit())
+  if refuelFromLavaTank(target) then return end
 
+  local charger = findChargingPeripheral()
   if charger then
     print("Found a charging peripheral, waiting for " .. target .. " fuel...")
     while turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < target do
       sleep(2)
     end
     print("Charged via peripheral.")
-    return
   end
-
-  -- Burn only the exact fuel type reserved in slot 1 and always keep one.
-  local pulled = 0
-  local burned = 0
-  while turtle.getFuelLevel() ~= "unlimited" and
-        turtle.getFuelLevel() < target do
-    while turtle.getItemCount(1) <= 1 do
-      local chestItem, chestError = chestFuelItem()
-      if chestError then
-        print(chestError)
-        return
-      elseif not chestItem or chestItem.name ~= fuelName then
-        print("Chest slot 1 no longer contains " .. fuelName .. ".")
-        print("Keeping the last one in turtle slot 1.")
-        print("Burned " .. burned .. " fuel item(s). Fuel: " ..
-              tostring(turtle.getFuelLevel()))
-        return
-      end
-
-      if chestItem.count <= 1 then
-        print("Keeping one " .. fuelName .. " in the chest's first slot.")
-        print("Keeping one more in turtle slot 1.")
-        return
-      end
-
-      local before = turtle.getItemCount(1)
-      if not suck(1) then
-        print("Could not pull " .. fuelName .. " from the shared chest.")
-        print("Burned " .. burned .. " fuel item(s). Fuel: " ..
-              tostring(turtle.getFuelLevel()))
-        return
-      end
-
-      if turtle.getItemCount(1) <= before then
-        print("Pulled item did not stack with slot 1; stopping safely.")
-        return
-      end
-      pulled = pulled + 1
-    end
-
-    if not turtle.refuel(1) then
-      print("Slot 1 does not contain valid turtle fuel.")
-      return
-    end
-    burned = burned + 1
-  end
-  print("Pulled " .. pulled .. " and burned " .. burned ..
-        " " .. fuelName .. " item(s). Fuel: " ..
-        tostring(turtle.getFuelLevel()))
 end
 
 local function refuelIfNeeded()
@@ -412,6 +395,34 @@ local function refuelIfNeeded()
     return
   end
   refuel()
+end
+
+local function refuelFromInventory(target)
+  local selectedSlot = turtle.getSelectedSlot()
+  local burned = 0
+
+  for slot = 1, 16 do
+    local fuel = turtle.getFuelLevel()
+    if fuel == "unlimited" or fuel >= target then break end
+
+    turtle.select(slot)
+    if turtle.getItemCount(slot) > 0 and turtle.refuel(0) then
+      while turtle.getItemCount(slot) > 0 do
+        fuel = turtle.getFuelLevel()
+        if fuel == "unlimited" or fuel >= target then break end
+        if not turtle.refuel(1) then break end
+        burned = burned + 1
+      end
+    end
+  end
+
+  turtle.select(selectedSlot)
+  local fuel = turtle.getFuelLevel()
+  if burned > 0 then
+    print("Burned " .. burned .. " carried fuel item(s). Fuel: " ..
+          tostring(fuel))
+  end
+  return fuel == "unlimited" or fuel >= target
 end
 
 ------------------------------------------------------------
@@ -480,6 +491,15 @@ local function goHome(stayHome)
 
   local unloadOk = true
   if DROP_OFF_HOME then
+    -- Park the bucket first so it reserves chest slot 1 while ore is dumped.
+    local bucketParked = false
+    local bucket = turtle.getItemDetail(1)
+    if isBucket(bucket) then
+      turtle.select(1)
+      bucketParked = turtle.drop(1)
+      if not bucketParked then unloadOk = false end
+    end
+
     for slot = 1, 16 do
       if not isKeepSlot(slot) then
         local item = turtle.getItemDetail(slot)
@@ -489,7 +509,13 @@ local function goHome(stayHome)
         end
       end
     end
+
     turtle.select(1)
+    if bucketParked and
+       (not turtle.suck(1) or not isBucket(turtle.getItemDetail(1))) then
+      print("Could not retrieve the bucket from chest slot 1.")
+      unloadOk = false
+    end
   end
 
   if not unloadOk then
@@ -513,7 +539,13 @@ end
 
 local function ensureFuel()
   local fuel = turtle.getFuelLevel()
-  if fuel ~= "unlimited" and fuel <= distanceHome() + MIN_FUEL_BUFFER then
+  local requiredFuel = distanceHome() + MIN_FUEL_BUFFER + 1
+  if fuel ~= "unlimited" and fuel < requiredFuel then
+    print("Fuel is low in the mine; checking carried items for fuel...")
+    if refuelFromInventory(requiredFuel) then
+      return
+    end
+    print("Carried fuel is not enough; returning home.")
     if not goHome() then error("Mining stopped safely.", 0) end
   end
 end
@@ -782,6 +814,20 @@ else
   saveState()
 end
 
+if distanceHome() == 0 then
+  print("Checking the lava tank before starting...")
+  refuelFromLavaTank()
+else
+  print("Turtle is away from home; skipping the startup lava-tank check.")
+end
+
+write("Which layer from the top should mining start at? (1 = top) ")
+local startLayer = tonumber(read())
+while not startLayer or startLayer < 1 or startLayer ~= math.floor(startLayer) do
+  write("Please enter a whole-number layer (1 = top): ")
+  startLayer = tonumber(read())
+end
+
 write("Which ore's Y-band? (e.g. coal, diamond, ancient debris) ")
 local bandOre = read():lower()
 bandOre = bandOre:match("^%s*(.-)%s*$")
@@ -824,33 +870,39 @@ local homeWorldY = currentWorldY - pos.y
 
 local firstWorldY = currentWorldY
 local lastWorldY = currentWorldY
+local layers = 1
 if band then
-  if currentWorldY > band[2] then
-    firstWorldY = band[2]
-  elseif currentWorldY < band[1] then
-    firstWorldY = band[1]
-  else
-    firstWorldY = currentWorldY
+  local topWorldY = band[2]
+  local bottomWorldY = band[1]
+  layers = math.ceil((topWorldY - bottomWorldY) / TUNNEL_SPACING) + 1
+
+  if startLayer > layers then
+    print("That band has only " .. layers .. " layers; starting at layer " ..
+          layers .. " instead.")
+    startLayer = layers
   end
-  lastWorldY = band[1]
-  if firstWorldY < lastWorldY then
-    lastWorldY = band[2]
-  end
+
+  firstWorldY = math.max(
+    topWorldY - ((startLayer - 1) * TUNNEL_SPACING),
+    bottomWorldY
+  )
+  lastWorldY = bottomWorldY
+elseif startLayer ~= 1 then
+  print("No Y-band is configured, so only layer 1 is available.")
+  startLayer = 1
 end
 
 local firstRelY = firstWorldY - homeWorldY
 local lastRelY = lastWorldY - homeWorldY
 
 local rows = math.floor((size - 1) / TUNNEL_SPACING) + 1
-local layers = 1
-if band then
-  layers = math.floor(math.abs(firstWorldY - lastWorldY) / TUNNEL_SPACING) + 1
-end
+local remainingLayers = layers - startLayer + 1
 local startupFuel = turtle.getFuelLevel()
 
 print("Plan: right-running main shaft with " .. rows ..
       " branches/layer, each " .. size .. " blocks long, ~" ..
-      layers .. " layer(s).")
+      remainingLayers .. " layer(s), starting at top-down layer " ..
+      startLayer .. " of " .. layers .. " (world Y" .. firstWorldY .. ").")
 
 if startupFuel ~= "unlimited" and startupFuel < REFUEL_BELOW then
   if distanceHome() ~= 0 then
@@ -858,14 +910,13 @@ if startupFuel ~= "unlimited" and startupFuel < REFUEL_BELOW then
     return
   end
 
-  print("Fuel is low; checking the shared chest behind the turtle...")
-  faceDir(2)
+  print("Fuel is low; checking the lava tank left of the turtle...")
   refuelIfNeeded()
   faceDir(0)
   startupFuel = turtle.getFuelLevel()
 
   if startupFuel ~= "unlimited" and startupFuel <= MIN_FUEL_BUFFER then
-    print("Unable to start: add more coal to the shared chest.")
+    print("Unable to start: add more lava to the tank left of the turtle.")
     return
   end
 end
