@@ -1,0 +1,17 @@
+---
+description: Always commit and push mine.lua updates so turtles can wget the latest script
+alwaysApply: true
+---
+
+# Always commit and push updates
+
+After making changes to this repo (especially `mine.lua`), always:
+
+1. Commit the changes with a concise message matching the existing style
+2. Push to `origin/main` so the turtle can download with:
+
+```shell
+wget https://raw.githubusercontent.com/ntimpson/mine.lua/main/mine.lua mine
+```
+
+Do not leave turtle script updates only on the local machine.
