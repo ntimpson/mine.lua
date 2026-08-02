@@ -237,8 +237,14 @@ local function isLavaCauldron(data)
   if not data or not data.name then return false end
   local name = data.name:lower()
   if name:find("lava_cauldron", 1, true) then return true end
+  if name:find("lava", 1, true) and name:find("cauldron", 1, true) then
+    return true
+  end
   if name:find("cauldron", 1, true) and data.state then
-    local fluid = tostring(data.state.fluid or data.state.Fluid or ""):lower()
+    local fluid = tostring(
+      data.state.fluid or data.state.Fluid or
+      data.state.liquid or data.state.Liquid or ""
+    ):lower()
     if fluid:find("lava", 1, true) then return true end
   end
   return false
@@ -344,28 +350,42 @@ local function handleCollectedLava()
   return emptyBucketIntoTank()
 end
 
-local function collectFromCauldronAhead()
+local function collectFromCauldronAhead(row, col)
   turtle.select(BUCKET_SLOT)
   if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
+    print("Row " .. row .. " col " .. col ..
+          ": no empty bucket in slot 1; cannot check.")
     return false
   end
 
   local ok, data = turtle.inspect()
-  if not (ok and isLavaCauldron(data)) then
+  if not ok then
+    print("Row " .. row .. " col " .. col ..
+          ": nothing ahead at (" .. pos.x .. "," .. pos.y .. "," .. pos.z ..
+          ") facing " .. facing .. ".")
+    return false
+  end
+
+  if not isLavaCauldron(data) then
+    print("Row " .. row .. " col " .. col ..
+          ": skipped (" .. data.name .. "), not a lava cauldron.")
     return false
   end
 
   if not turtle.place() then
-    print("Failed to fill the bucket from the cauldron ahead.")
+    print("Row " .. row .. " col " .. col ..
+          ": lava cauldron seen but bucket fill failed.")
     return false
   end
 
   if itemName(BUCKET_SLOT) ~= "minecraft:lava_bucket" then
-    print("Cauldron interaction did not produce a lava bucket.")
+    print("Row " .. row .. " col " .. col ..
+          ": place succeeded but slot 1 is not a lava bucket.")
     return false
   end
 
-  print("Collected lava at relative (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
+  print("Row " .. row .. " col " .. col ..
+        ": collected lava at (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
   return true
 end
 
@@ -382,6 +402,7 @@ end
 
 local function sweepField(cols, rows)
   local collected = 0
+  local checked = 0
 
   for row = 1, rows do
     for col = 1, cols do
@@ -406,18 +427,28 @@ local function sweepField(cols, rows)
       end
 
       local x, y, z = cauldronStandPos(col, row)
-      print("Checking row " .. row .. " cauldron " .. col ..
-            " from (" .. x .. "," .. y .. "," .. z .. ")...")
+      print("Moving to row " .. row .. " col " .. col ..
+            " stand (" .. x .. "," .. y .. "," .. z .. ")...")
 
       if not goToField(x, y, z) then
-        print("Could not reach that cauldron stand position.")
+        print("Could not reach row " .. row .. " col " .. col .. ".")
+        goHome()
+        return collected, false
+      end
+
+      -- Must stand on the planned tile and face the field before inspecting.
+      if pos.x ~= x or pos.y ~= y or pos.z ~= z then
+        print("Position desync at row " .. row .. " col " .. col ..
+              ": expected (" .. x .. "," .. y .. "," .. z ..
+              ") but tracked (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
         goHome()
         return collected, false
       end
 
       faceDir(0) -- look into the field / cauldron ahead
+      checked = checked + 1
 
-      if collectFromCauldronAhead() then
+      if collectFromCauldronAhead(row, col) then
         collected = collected + 1
         if not handleCollectedLava() then
           return collected, false
@@ -425,6 +456,9 @@ local function sweepField(cols, rows)
       end
     end
   end
+
+  print("Pass checked " .. checked .. "/" .. (cols * rows) ..
+        " cauldrons, collected " .. collected .. ".")
 
   if not goHome() then
     return collected, false
@@ -439,6 +473,16 @@ local resumed = loadState()
 if resumed then
   print("Loaded saved position: (" .. pos.x .. "," .. pos.y .. "," .. pos.z ..
         "), facing " .. facing)
+  write("Is the turtle at the dock facing the field? (y/n) ")
+  local atDock = read():lower()
+  if atDock == "y" or atDock == "yes" or atDock == "" then
+    pos = {x = 0, y = 0, z = 0}
+    facing = 0
+    saveState()
+    print("Recalibrated home to (0,0,0), facing the field.")
+  else
+    print("Keeping the saved position. Pathing may be wrong if the turtle was moved.")
+  end
 else
   print("No saved position found -- treating current spot as home (0,0,0).")
   saveState()
