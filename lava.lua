@@ -6,20 +6,25 @@
   If fuel is below 1000 at startup or after a collect, it burns lava for fuel
   instead (startup pulls from the tank; mid-run burns the collected bucket).
 
+  Travel always goes to the clear aisle past the end of the current row, then
+  home, and reverses that same path on the way back -- never cuts through
+  earlier cauldron rows.
+
   SETUP:
   1. Place the turtle at the dock -- this spot becomes home (0,0,0).
   2. Put a bucket-fillable lava/fluid TANK directly BEHIND the turtle.
   3. Put one empty bucket in turtle slot 1.
   4. Face the turtle toward the cauldron field before the first run.
-  5. Lay out cauldrons like this (top-down, turtle facing the field):
+  5. Lay out cauldrons like this (top-down, turtle facing the field).
+     Leave the column to the RIGHT of the last cauldron empty (travel aisle):
 
          [tank]
         [turtle]  <-- home, facing field
-     [C][C][C][C] <-- row 1, 1 block in front, side-by-side
+     [C][C][C][C] [ ] <-- row 1 + aisle
          (gap)
-     [C][C][C][C] <-- row 2
+     [C][C][C][C] [ ] <-- row 2 + aisle
          (gap)
-     [C][C][C][C] <-- row 3
+     [C][C][C][C] [ ] <-- row 3 + aisle
 
   6. Run: lava
 ]]--
@@ -33,6 +38,7 @@ local ROW_SPACING = 2 -- cauldron row, empty block, next cauldron row
 local FIRST_ROW_Z = 1 -- first cauldron row is 1 block in front of home
 local WAIT_BETWEEN_PASSES = 10 -- seconds to wait when a full pass finds no lava
 local REFUEL_BELOW = 1000 -- burn lava for fuel when below this
+local fieldCols = 1 -- set at startup; aisle is one block past the last cauldron
 
 ------------------------------------------------------------
 -- STATE
@@ -127,13 +133,69 @@ local function goTo(x, y, z)
   return true
 end
 
-local function goHome()
-  if not goTo(0, 0, 0) then
-    print("Could not return home.")
+-- Clear lane one block past the last cauldron column (x = 0 .. fieldCols-1).
+local function aisleX()
+  return fieldCols
+end
+
+-- Home via: along row -> aisle end -> aisle to home line -> dock.
+local function goHomeSafe()
+  if pos.x == 0 and pos.y == 0 and pos.z == 0 then
+    faceDir(0)
+    return true
+  end
+
+  local ax = aisleX()
+  local rowZ = pos.z
+  print("Returning via end of row aisle x=" .. ax .. "...")
+
+  if not goTo(ax, pos.y, rowZ) then
+    print("Could not reach the end of the row.")
     return false
   end
+  if not goTo(ax, 0, 0) then
+    print("Could not follow the aisle back to the home line.")
+    return false
+  end
+  if not goTo(0, 0, 0) then
+    print("Could not return home along the dock line.")
+    return false
+  end
+
   faceDir(0)
   return true
+end
+
+-- Outbound reverse of goHomeSafe, or direct move when already on that row.
+local function goToSafe(x, y, z)
+  if pos.x == x and pos.y == y and pos.z == z then
+    return true
+  end
+
+  -- Same row stand line: just walk along the row.
+  if pos.z == z and pos.y == y then
+    return goTo(x, y, z)
+  end
+
+  local ax = aisleX()
+
+  -- On the home line: aisle out, then along the row.
+  if pos.z == 0 and pos.y == 0 then
+    print("Heading out via end of row aisle x=" .. ax .. "...")
+    if not goTo(ax, 0, 0) then return false end
+    if not goTo(ax, y, z) then return false end
+    return goTo(x, y, z)
+  end
+
+  -- Anywhere else: get home on the safe path, then reverse out.
+  if not goHomeSafe() then return false end
+  if not goTo(ax, 0, 0) then return false end
+  if not goTo(ax, y, z) then return false end
+  return goTo(x, y, z)
+end
+
+local function goHome()
+  return goHomeSafe()
 end
 
 ------------------------------------------------------------
@@ -353,7 +415,7 @@ local function sweepField(cols, rows)
       print("Checking row " .. row .. " cauldron " .. col ..
             " from (" .. x .. "," .. y .. "," .. z .. ")...")
 
-      if not goTo(x, y, z) then
+      if not goToSafe(x, y, z) then
         print("Could not reach that cauldron stand position.")
         goHome()
         return collected, false
@@ -402,8 +464,11 @@ while not rows or rows < 1 or rows ~= math.floor(rows) do
   rows = tonumber(read())
 end
 
+fieldCols = cols
+
 print("Field: " .. cols .. " cauldrons/row, " .. rows ..
       " rows, 1 empty block between rows.")
+print("Travel aisle is the empty column to the right of the last cauldron.")
 print("Lava goes into the tank behind home.")
 print("Lava is burned for fuel only when below " .. REFUEL_BELOW .. ".")
 
