@@ -14,16 +14,17 @@
   2. Put a bucket-fillable lava/fluid TANK directly BEHIND the turtle.
   3. Put one empty bucket in turtle slot 1.
   4. Face the turtle toward the cauldron field before the first run.
-  5. Lay out cauldrons like this (top-down, turtle facing the field).
-     Keep ONE empty column past the last cauldron (return lane):
+  5. First cauldron is kitty-corner front-RIGHT of the turtle.
+     Row 2 is two blocks forward from home. Keep ONE empty column past
+     the last cauldron as the return lane:
 
-         [tank]
-        [turtle]  <-- home, facing field
-     [C][C][C][C] [ ] <-- row 1 + return lane
-         (gap)
-     [C][C][C][C] [ ] <-- row 2 + return lane
-         (gap)
-     [C][C][C][C] [ ] <-- row 3 + return lane
+              [tank]
+             [turtle]     <-- home, facing field
+          [C][C][C][C] [ ] <-- row 1 (first C is front-right) + return lane
+              (gap)
+          [C][C][C][C] [ ] <-- row 2 (two forwards from home) + return lane
+              (gap)
+          [C][C][C][C] [ ] <-- row 3 + return lane
 
   6. Run: lava
 ]]--
@@ -33,11 +34,11 @@
 ------------------------------------------------------------
 local STATE_FILE = "lava_state.txt"
 local BUCKET_SLOT = 1
-local ROW_SPACING = 2 -- cauldron row, empty block, next cauldron row
-local FIRST_ROW_Z = 1 -- first cauldron row is 1 block in front of home
+local ROW_SPACING = 2 -- stand lines at z = 0, -2, -4, ...
+local FIRST_COL_X = 1 -- first cauldron stand is one block to the right of home
 local WAIT_BETWEEN_PASSES = 10 -- seconds to wait when a full pass finds no lava
 local REFUEL_BELOW = 1000 -- burn lava for fuel when below this
-local fieldCols = 1 -- set at startup
+local fieldCols = 1 -- set at startup; last cauldron x = fieldCols
 
 ------------------------------------------------------------
 -- STATE
@@ -132,35 +133,26 @@ local function goTo(x, y, z)
   return true
 end
 
-local function endOfRowX()
-  return fieldCols - 1
-end
-
+-- Last cauldron is at x = fieldCols; return lane is the next column.
 local function returnLaneX()
-  return fieldCols
+  return fieldCols + 1
 end
 
--- Home via end of row + return lane (the only pathing change from the
--- original build). Reverse of this is used to go back out.
+-- Home via the empty return lane past the last cauldron (ground only).
 local function goHome()
   if pos.x == 0 and pos.y == 0 and pos.z == 0 then
     faceDir(0)
     return true
   end
 
-  local endX = endOfRowX()
   local laneX = returnLaneX()
   local rowZ = pos.z
 
-  print("Pathing home via end of row, then return lane...")
+  print("Pathing home via return lane x=" .. laneX .. "...")
 
-  if not goTo(endX, 0, rowZ) then
-    print("Could not reach the end of the row.")
-    return false
-  end
   if not goTo(laneX, 0, rowZ) then
-    print("Could not step into the return lane.")
-    print("Leave 1 empty column past the last cauldron.")
+    print("Could not reach the return lane at the end of the row.")
+    print("Leave column x=" .. laneX .. " empty past the last cauldron.")
     return false
   end
   if not goTo(laneX, 0, 0) then
@@ -176,7 +168,7 @@ local function goHome()
   return true
 end
 
--- Same-row moves stay direct. Row changes reverse the home path.
+-- Same-row moves stay direct. Row changes reverse the home path on the ground.
 local function goToField(x, y, z)
   if pos.x == x and pos.y == y and pos.z == z then
     return true
@@ -186,18 +178,16 @@ local function goToField(x, y, z)
     return goTo(x, y, z)
   end
 
-  local endX = endOfRowX()
   local laneX = returnLaneX()
 
-  print("Pathing out via return lane, then end of row...")
+  print("Pathing out via return lane x=" .. laneX .. "...")
 
   if not goTo(laneX, 0, 0) then return false end
   if not goTo(laneX, 0, z) then
     print("Could not follow the return lane out.")
-    print("Leave 1 empty column past the last cauldron.")
+    print("Leave column x=" .. laneX .. " empty past the last cauldron.")
     return false
   end
-  if not goTo(endX, 0, z) then return false end
   return goTo(x, y, z)
 end
 
@@ -383,10 +373,11 @@ end
 -- FIELD SWEEP
 ------------------------------------------------------------
 local function cauldronStandPos(col, row)
-  -- Field is in front of home (facing 0 / -z). Stand one block closer to home
-  -- than the cauldron, then face forward into it.
-  local cauldronZ = -(FIRST_ROW_Z + (row - 1) * ROW_SPACING)
-  return col - 1, 0, cauldronZ + 1
+  -- First stand is kitty-corner front-right of home: (1,0,0), facing the
+  -- cauldron one block ahead. Row 2 stand line is two blocks forward (z=-2).
+  local x = FIRST_COL_X + (col - 1) -- cols map to x = 1 .. fieldCols
+  local z = -((row - 1) * ROW_SPACING) -- 0, -2, -4, ...
+  return x, 0, z
 end
 
 local function sweepField(cols, rows)
@@ -471,7 +462,9 @@ fieldCols = cols
 
 print("Field: " .. cols .. " cauldrons/row, " .. rows ..
       " rows, 1 empty block between rows.")
-print("Keep 1 empty column past the last cauldron for the return path.")
+print("Cauldron stands at x=1.." .. cols ..
+      ", return lane at x=" .. (cols + 1) .. " (keep empty).")
+print("Row 1 at z=0, row 2 at z=-2 (two steps forward from home).")
 print("Lava goes into the tank behind home.")
 print("Lava is burned for fuel only when below " .. REFUEL_BELOW .. ".")
 
