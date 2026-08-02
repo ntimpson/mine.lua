@@ -303,15 +303,38 @@ local function ensureEmptyBucket()
   return false
 end
 
-local function isLavaCauldron(data)
+local function isCauldronBlock(data)
   if not data or not data.name then return false end
   local name = data.name:lower()
-  -- Java: minecraft:lava_cauldron. Ignore plain minecraft:cauldron.
-  if name:find("lava_cauldron", 1, true) then return true end
-  if name:find("lava", 1, true) and name:find("cauldron", 1, true) then
-    return true
+  if name:find("cauldron", 1, true) then return true end
+  if data.tags then
+    for tag, _ in pairs(data.tags) do
+      if tostring(tag):lower():find("cauldron", 1, true) then
+        return true
+      end
+    end
   end
   return false
+end
+
+local function looksLikeLavaCauldron(data)
+  if not isCauldronBlock(data) then return false end
+  local name = data.name:lower()
+  if name:find("lava", 1, true) then return true end
+  if data.state then
+    for key, value in pairs(data.state) do
+      local blob = (tostring(key) .. "=" .. tostring(value)):lower()
+      if blob:find("lava", 1, true) then return true end
+    end
+  end
+  return false
+end
+
+local function describeInspect(data)
+  if not data then return "nil" end
+  local ok, text = pcall(textutils.serialize, data)
+  if ok then return text end
+  return tostring(data.name)
 end
 
 local function emptyBucketIntoTank()
@@ -416,7 +439,7 @@ end
 local function faceAdjacentCauldron()
   for _ = 1, 4 do
     local ok, data = turtle.inspect()
-    if ok and data.name and data.name:lower():find("cauldron", 1, true) then
+    if ok and isCauldronBlock(data) then
       return true, data
     end
     turnRight()
@@ -439,31 +462,35 @@ local function collectFromCauldronAhead(row, col)
     return false
   end
 
-  if not isLavaCauldron(data) then
+  -- Prefer obvious lava cauldrons, but always try to scoop any cauldron.
+  -- ATM/modded packs sometimes report odd names/states for filled ones.
+  if not looksLikeLavaCauldron(data) then
     print("Row " .. row .. " col " .. col ..
-          ": skipped (" .. data.name .. "), cauldron has no lava.")
-    return false
+          ": cauldron inspect does not look like lava; trying scoop anyway.")
+    print(describeInspect(data))
   end
 
   turtle.select(BUCKET_SLOT)
   local before = itemName(BUCKET_SLOT)
   if not turtle.place() then
     print("Row " .. row .. " col " .. col ..
-          ": lava cauldron seen but bucket fill failed.")
+          ": bucket interact failed on " .. tostring(data.name) .. ".")
+    print(describeInspect(data))
     return false
   end
-  sleep(0.2)
+  sleep(0.25)
 
-  if not ensureLavaBucketInSlot1() then
+  if ensureLavaBucketInSlot1() then
     print("Row " .. row .. " col " .. col ..
-          ": bucket did not fill. Before=" .. tostring(before) ..
-          " after=" .. tostring(itemName(BUCKET_SLOT)) .. ".")
-    return false
+          ": collected lava at (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
+    return true
   end
 
   print("Row " .. row .. " col " .. col ..
-        ": collected lava at (" .. pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
-  return true
+        ": no lava collected. Before=" .. tostring(before) ..
+        " after=" .. tostring(itemName(BUCKET_SLOT)) .. ".")
+  print(describeInspect(data))
+  return false
 end
 
 ------------------------------------------------------------
