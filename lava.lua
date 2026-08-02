@@ -306,16 +306,10 @@ end
 local function isLavaCauldron(data)
   if not data or not data.name then return false end
   local name = data.name:lower()
+  -- Java: minecraft:lava_cauldron. Ignore plain minecraft:cauldron.
   if name:find("lava_cauldron", 1, true) then return true end
   if name:find("lava", 1, true) and name:find("cauldron", 1, true) then
     return true
-  end
-  if name:find("cauldron", 1, true) and data.state then
-    local fluid = tostring(
-      data.state.fluid or data.state.Fluid or
-      data.state.liquid or data.state.Liquid or ""
-    ):lower()
-    if fluid:find("lava", 1, true) then return true end
   end
   return false
 end
@@ -418,6 +412,18 @@ local function handleCollectedLava()
   return emptyBucketIntoTank()
 end
 
+-- Don't trust saved facing alone after long trips home; find a cauldron by inspect.
+local function faceAdjacentCauldron()
+  for _ = 1, 4 do
+    local ok, data = turtle.inspect()
+    if ok and data.name and data.name:lower():find("cauldron", 1, true) then
+      return true, data
+    end
+    turnRight()
+  end
+  return false, nil
+end
+
 local function collectFromCauldronAhead(row, col)
   if not ensureEmptyBucketInSlot1() then
     print("Row " .. row .. " col " .. col ..
@@ -425,31 +431,33 @@ local function collectFromCauldronAhead(row, col)
     return false
   end
 
-  local ok, data = turtle.inspect()
-  if not ok then
+  local found, data = faceAdjacentCauldron()
+  if not found then
     print("Row " .. row .. " col " .. col ..
-          ": nothing ahead at (" .. pos.x .. "," .. pos.y .. "," .. pos.z ..
-          ") facing " .. facing .. ".")
+          ": no cauldron adjacent at (" .. pos.x .. "," .. pos.y .. "," ..
+          pos.z .. "). Check stand position / pathing.")
     return false
   end
 
   if not isLavaCauldron(data) then
     print("Row " .. row .. " col " .. col ..
-          ": skipped (" .. data.name .. "), not a lava cauldron.")
+          ": skipped (" .. data.name .. "), cauldron has no lava.")
     return false
   end
 
   turtle.select(BUCKET_SLOT)
+  local before = itemName(BUCKET_SLOT)
   if not turtle.place() then
     print("Row " .. row .. " col " .. col ..
           ": lava cauldron seen but bucket fill failed.")
     return false
   end
+  sleep(0.2)
 
   if not ensureLavaBucketInSlot1() then
     print("Row " .. row .. " col " .. col ..
-          ": place returned true but no lava bucket is in inventory.")
-    print("Slot 1 is currently: " .. tostring(itemName(BUCKET_SLOT)))
+          ": bucket did not fill. Before=" .. tostring(before) ..
+          " after=" .. tostring(itemName(BUCKET_SLOT)) .. ".")
     return false
   end
 
@@ -514,7 +522,6 @@ local function sweepField(cols, rows)
         return collected, false
       end
 
-      faceDir(0) -- look into the field / cauldron ahead
       checked = checked + 1
 
       if collectFromCauldronAhead(row, col) then
