@@ -435,16 +435,16 @@ local function handleCollectedLava()
   return emptyBucketIntoTank()
 end
 
--- Don't trust saved facing alone after long trips home; find a cauldron by inspect.
-local function faceAdjacentCauldron()
-  for _ = 1, 4 do
-    local ok, data = turtle.inspect()
-    if ok and isCauldronBlock(data) then
-      return true, data
-    end
-    turnRight()
+-- Cauldrons for a stand are always one block in the field direction (facing 0).
+-- Do NOT scan other sides: on row 2+, facing home looks at the previous row's
+-- cauldrons and would empty those by mistake.
+local function faceFieldCauldron()
+  faceDir(0)
+  local ok, data = turtle.inspect()
+  if ok and isCauldronBlock(data) then
+    return true, data
   end
-  return false, nil
+  return false, data
 end
 
 local function collectFromCauldronAhead(row, col)
@@ -454,11 +454,12 @@ local function collectFromCauldronAhead(row, col)
     return false
   end
 
-  local found, data = faceAdjacentCauldron()
+  local found, data = faceFieldCauldron()
   if not found then
     print("Row " .. row .. " col " .. col ..
-          ": no cauldron adjacent at (" .. pos.x .. "," .. pos.y .. "," ..
-          pos.z .. "). Check stand position / pathing.")
+          ": no cauldron in field direction at (" ..
+          pos.x .. "," .. pos.y .. "," .. pos.z .. ").")
+    if data then print(describeInspect(data)) end
     return false
   end
 
