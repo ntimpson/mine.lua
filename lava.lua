@@ -6,27 +6,26 @@
   If fuel is below 1000 at startup or after a collect, it burns lava for fuel
   instead (startup pulls from the tank; mid-run burns the collected bucket).
 
-  Travel always goes to the clear aisle past the end of the current row, then
-  home, and reverses that same path on the way back -- never cuts through
-  earlier cauldron rows.
+  Travel always walks to the end of the current row, goes up one block,
+  then home above the cauldrons, and reverses that same path going back out.
 
   SETUP:
   1. Place the turtle at the dock -- this spot becomes home (0,0,0).
   2. Put a bucket-fillable lava/fluid TANK directly BEHIND the turtle.
   3. Put one empty bucket in turtle slot 1.
-  4. Face the turtle toward the cauldron field before the first run.
-  5. Lay out cauldrons like this (top-down, turtle facing the field).
-     Leave the column to the RIGHT of the last cauldron empty (travel aisle):
+  4. Keep one air block above the cauldron field so the turtle can path over it.
+  5. Face the turtle toward the cauldron field before the first run.
+  6. Lay out cauldrons like this (top-down, turtle facing the field):
 
          [tank]
         [turtle]  <-- home, facing field
-     [C][C][C][C] [ ] <-- row 1 + aisle
+     [C][C][C][C] <-- row 1, 1 block in front, side-by-side
          (gap)
-     [C][C][C][C] [ ] <-- row 2 + aisle
+     [C][C][C][C] <-- row 2
          (gap)
-     [C][C][C][C] [ ] <-- row 3 + aisle
+     [C][C][C][C] <-- row 3
 
-  6. Run: lava
+  7. Run: lava
 ]]--
 
 ------------------------------------------------------------
@@ -38,7 +37,7 @@ local ROW_SPACING = 2 -- cauldron row, empty block, next cauldron row
 local FIRST_ROW_Z = 1 -- first cauldron row is 1 block in front of home
 local WAIT_BETWEEN_PASSES = 10 -- seconds to wait when a full pass finds no lava
 local REFUEL_BELOW = 1000 -- burn lava for fuel when below this
-local fieldCols = 1 -- set at startup; aisle is one block past the last cauldron
+local fieldCols = 1 -- set at startup; end-of-row x is fieldCols - 1
 
 ------------------------------------------------------------
 -- STATE
@@ -133,32 +132,53 @@ local function goTo(x, y, z)
   return true
 end
 
--- Clear lane one block past the last cauldron column (x = 0 .. fieldCols-1).
-local function aisleX()
-  return fieldCols
+-- Last cauldron stand on a row (columns are x = 0 .. fieldCols-1).
+local function endX()
+  return fieldCols - 1
 end
 
--- Home via: along row -> aisle end -> aisle to home line -> dock.
+-- Home via: along row to the end -> up -> over cauldrons -> dock -> down.
 local function goHomeSafe()
   if pos.x == 0 and pos.y == 0 and pos.z == 0 then
     faceDir(0)
     return true
   end
 
-  local ax = aisleX()
+  local ex = endX()
   local rowZ = pos.z
-  print("Returning via end of row aisle x=" .. ax .. "...")
+  print("Returning via end of row x=" .. ex .. "...")
 
-  if not goTo(ax, pos.y, rowZ) then
+  -- Walk to the end of the current row on the stand line.
+  if not goTo(ex, 0, rowZ) then
     print("Could not reach the end of the row.")
     return false
   end
-  if not goTo(ax, 0, 0) then
-    print("Could not follow the aisle back to the home line.")
+
+  -- Row 1 shares the home line, so just walk back to the dock.
+  if rowZ == 0 then
+    if not goTo(0, 0, 0) then
+      print("Could not return home along the dock line.")
+      return false
+    end
+    faceDir(0)
+    return true
+  end
+
+  -- Deeper rows: climb over the earlier cauldron rows.
+  if not goTo(ex, 1, rowZ) then
+    print("Could not climb above the row. Keep air above the cauldrons.")
+    return false
+  end
+  if not goTo(ex, 1, 0) then
+    print("Could not path above the cauldrons back to the home line.")
+    return false
+  end
+  if not goTo(0, 1, 0) then
+    print("Could not reach the dock from above.")
     return false
   end
   if not goTo(0, 0, 0) then
-    print("Could not return home along the dock line.")
+    print("Could not drop down onto the dock.")
     return false
   end
 
@@ -177,21 +197,29 @@ local function goToSafe(x, y, z)
     return goTo(x, y, z)
   end
 
-  local ax = aisleX()
-
-  -- On the home line: aisle out, then along the row.
-  if pos.z == 0 and pos.y == 0 then
-    print("Heading out via end of row aisle x=" .. ax .. "...")
-    if not goTo(ax, 0, 0) then return false end
-    if not goTo(ax, y, z) then return false end
+  -- Stay on the home / row-1 line.
+  if z == 0 and pos.z == 0 and pos.y == 0 then
     return goTo(x, y, z)
+  end
+
+  local ex = endX()
+
+  -- From the dock out to a deeper row: reverse of goHomeSafe.
+  if pos.x == 0 and pos.y == 0 and pos.z == 0 then
+    print("Heading out via end of row x=" .. ex .. "...")
+    if not goTo(0, 1, 0) then
+      print("Could not climb above the dock. Keep air above home.")
+      return false
+    end
+    if not goTo(ex, 1, 0) then return false end
+    if not goTo(ex, 1, z) then return false end
+    if not goTo(ex, 0, z) then return false end
+    return goTo(x, 0, z)
   end
 
   -- Anywhere else: get home on the safe path, then reverse out.
   if not goHomeSafe() then return false end
-  if not goTo(ax, 0, 0) then return false end
-  if not goTo(ax, y, z) then return false end
-  return goTo(x, y, z)
+  return goToSafe(x, y, z)
 end
 
 local function goHome()
@@ -468,7 +496,7 @@ fieldCols = cols
 
 print("Field: " .. cols .. " cauldrons/row, " .. rows ..
       " rows, 1 empty block between rows.")
-print("Travel aisle is the empty column to the right of the last cauldron.")
+print("Paths go to the end of the row, then over the cauldrons.")
 print("Lava goes into the tank behind home.")
 print("Lava is burned for fuel only when below " .. REFUEL_BELOW .. ".")
 
