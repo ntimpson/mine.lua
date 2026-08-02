@@ -199,37 +199,107 @@ local function itemName(slot)
   return item and item.name or nil
 end
 
+local function isEmptyBucketName(name)
+  if not name then return false end
+  local n = name:lower()
+  if n == "minecraft:bucket" then return true end
+  -- Empty bucket, but not a filled *lava_bucket* / water_bucket / etc.
+  if n:find("bucket", 1, true) and not n:find("lava", 1, true)
+     and not n:find("water", 1, true) and not n:find("milk", 1, true)
+     and not n:find("powder", 1, true) then
+    return true
+  end
+  return false
+end
+
+local function isLavaBucketName(name)
+  if not name then return false end
+  local n = name:lower()
+  return n:find("lava", 1, true) ~= nil and n:find("bucket", 1, true) ~= nil
+end
+
+local function findSlot(predicate)
+  for slot = 1, 16 do
+    local name = itemName(slot)
+    if name and predicate(name) then return slot end
+  end
+  return nil
+end
+
+local function moveSlotToBucketSlot(slot)
+  if slot == BUCKET_SLOT then
+    turtle.select(BUCKET_SLOT)
+    return true
+  end
+  turtle.select(slot)
+  if not turtle.transferTo(BUCKET_SLOT) then
+    return false
+  end
+  turtle.select(BUCKET_SLOT)
+  return true
+end
+
+local function ensureLavaBucketInSlot1()
+  if isLavaBucketName(itemName(BUCKET_SLOT)) then
+    turtle.select(BUCKET_SLOT)
+    return true
+  end
+  local slot = findSlot(isLavaBucketName)
+  if not slot then return false end
+  print("Moved lava bucket from slot " .. slot .. " to slot " .. BUCKET_SLOT .. ".")
+  return moveSlotToBucketSlot(slot) and isLavaBucketName(itemName(BUCKET_SLOT))
+end
+
+local function ensureEmptyBucketInSlot1()
+  if isEmptyBucketName(itemName(BUCKET_SLOT)) then
+    turtle.select(BUCKET_SLOT)
+    return true
+  end
+  local slot = findSlot(isEmptyBucketName)
+  if not slot then return false end
+  -- Clear a non-bucket item out of slot 1 if needed.
+  if itemName(BUCKET_SLOT) then
+    local free = nil
+    for s = 2, 16 do
+      if turtle.getItemCount(s) == 0 then free = s break end
+    end
+    if not free then return false end
+    turtle.select(BUCKET_SLOT)
+    if not turtle.transferTo(free) then return false end
+  end
+  print("Moved empty bucket from slot " .. slot .. " to slot " .. BUCKET_SLOT .. ".")
+  return moveSlotToBucketSlot(slot) and isEmptyBucketName(itemName(BUCKET_SLOT))
+end
+
 local function needsFuel()
   local fuel = turtle.getFuelLevel()
   return fuel ~= "unlimited" and fuel < REFUEL_BELOW
 end
 
 local function burnLavaBucket()
-  turtle.select(BUCKET_SLOT)
-  if itemName(BUCKET_SLOT) ~= "minecraft:lava_bucket" then
-    print("Slot 1 does not have a lava bucket to burn.")
+  if not ensureLavaBucketInSlot1() then
+    print("No lava bucket in inventory to burn.")
     return false
   end
+  turtle.select(BUCKET_SLOT)
   if not turtle.refuel(1) then
     print("Could not burn the lava bucket.")
     return false
   end
   print("Burned lava bucket for fuel. Fuel: " .. tostring(turtle.getFuelLevel()))
-  return itemName(BUCKET_SLOT) == "minecraft:bucket"
+  return ensureEmptyBucketInSlot1()
 end
 
 local function ensureEmptyBucket()
-  turtle.select(BUCKET_SLOT)
-  local name = itemName(BUCKET_SLOT)
-  if name == "minecraft:bucket" then return true end
-  if name == "minecraft:lava_bucket" then
+  if ensureEmptyBucketInSlot1() then return true end
+  if ensureLavaBucketInSlot1() then
     if needsFuel() then
       return burnLavaBucket()
     end
-    print("Slot 1 already has a lava bucket; emptying into the tank first.")
+    print("Carrying a lava bucket; emptying into the tank first.")
     return false
   end
-  print("Put an empty bucket in turtle slot 1.")
+  print("Put an empty bucket in the turtle (preferably slot 1).")
   return false
 end
 
@@ -253,27 +323,27 @@ end
 local function emptyBucketIntoTank()
   if not goHome() then return false end
   faceDir(2) -- tank is behind home
-  turtle.select(BUCKET_SLOT)
 
-  local name = itemName(BUCKET_SLOT)
-  if name == "minecraft:bucket" then
+  -- Already holding only an empty bucket -- nothing to deposit.
+  if isEmptyBucketName(itemName(BUCKET_SLOT)) and not findSlot(isLavaBucketName) then
     faceDir(0)
     return true
   end
-  if name ~= "minecraft:lava_bucket" then
-    print("Slot 1 does not have a lava bucket to empty.")
+  if not ensureLavaBucketInSlot1() then
+    print("No lava bucket in inventory to empty.")
     faceDir(0)
     return false
   end
 
+  turtle.select(BUCKET_SLOT)
   if not turtle.place() then
     print("Could not empty the lava bucket into the tank behind home.")
     faceDir(0)
     return false
   end
 
-  if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
-    print("Tank did not return an empty bucket.")
+  if not ensureEmptyBucketInSlot1() then
+    print("Tank did not return an empty bucket to inventory.")
     faceDir(0)
     return false
   end
@@ -287,11 +357,9 @@ local function fillBucketFromTank()
   if pos.x ~= 0 or pos.y ~= 0 or pos.z ~= 0 then
     if not goHome() then return false end
   end
-  if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
-    if not ensureEmptyBucket() then
-      faceDir(0)
-      return false
-    end
+  if not ensureEmptyBucket() then
+    faceDir(0)
+    return false
   end
 
   faceDir(2) -- tank is behind home
@@ -302,7 +370,7 @@ local function fillBucketFromTank()
     return false
   end
 
-  if itemName(BUCKET_SLOT) ~= "minecraft:lava_bucket" then
+  if not ensureLavaBucketInSlot1() then
     print("Tank did not provide a lava bucket.")
     faceDir(0)
     return false
@@ -351,10 +419,9 @@ local function handleCollectedLava()
 end
 
 local function collectFromCauldronAhead(row, col)
-  turtle.select(BUCKET_SLOT)
-  if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
+  if not ensureEmptyBucketInSlot1() then
     print("Row " .. row .. " col " .. col ..
-          ": no empty bucket in slot 1; cannot check.")
+          ": no empty bucket available; cannot check.")
     return false
   end
 
@@ -372,15 +439,17 @@ local function collectFromCauldronAhead(row, col)
     return false
   end
 
+  turtle.select(BUCKET_SLOT)
   if not turtle.place() then
     print("Row " .. row .. " col " .. col ..
           ": lava cauldron seen but bucket fill failed.")
     return false
   end
 
-  if itemName(BUCKET_SLOT) ~= "minecraft:lava_bucket" then
+  if not ensureLavaBucketInSlot1() then
     print("Row " .. row .. " col " .. col ..
-          ": place succeeded but slot 1 is not a lava bucket.")
+          ": place returned true but no lava bucket is in inventory.")
+    print("Slot 1 is currently: " .. tostring(itemName(BUCKET_SLOT)))
     return false
   end
 
