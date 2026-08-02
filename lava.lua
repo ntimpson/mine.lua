@@ -2,13 +2,13 @@
   ATM10 Lava Cauldron Collector
   -----------------------------
   Walks a grid of lava cauldrons, fills a bucket from any that have lava,
-  then burns that lava as turtle fuel. At startup, if fuel is low, it
-  pulls one or more lava buckets from the tank behind home.
+  then returns home and empties the bucket into the tank behind the dock.
+  If fuel is below 1000 at startup or after a collect, it burns lava for fuel
+  instead (startup pulls from the tank; mid-run burns the collected bucket).
 
   SETUP:
   1. Place the turtle at the dock -- this spot becomes home (0,0,0).
-  2. Put a bucket-fillable lava/fluid TANK directly BEHIND the turtle
-     (startup fuel reserve).
+  2. Put a bucket-fillable lava/fluid TANK directly BEHIND the turtle.
   3. Put one empty bucket in turtle slot 1.
   4. Face the turtle toward the cauldron field before the first run.
   5. Lay out cauldrons like this (top-down, turtle facing the field):
@@ -32,7 +32,7 @@ local BUCKET_SLOT = 1
 local ROW_SPACING = 2 -- cauldron row, empty block, next cauldron row
 local FIRST_ROW_Z = 1 -- first cauldron row is 1 block in front of home
 local WAIT_BETWEEN_PASSES = 10 -- seconds to wait when a full pass finds no lava
-local REFUEL_BELOW = 1000 -- pull lava from the home tank when below this
+local REFUEL_BELOW = 1000 -- burn lava for fuel when below this
 
 ------------------------------------------------------------
 -- STATE
@@ -144,6 +144,11 @@ local function itemName(slot)
   return item and item.name or nil
 end
 
+local function needsFuel()
+  local fuel = turtle.getFuelLevel()
+  return fuel ~= "unlimited" and fuel < REFUEL_BELOW
+end
+
 local function burnLavaBucket()
   turtle.select(BUCKET_SLOT)
   if itemName(BUCKET_SLOT) ~= "minecraft:lava_bucket" then
@@ -154,7 +159,7 @@ local function burnLavaBucket()
     print("Could not burn the lava bucket.")
     return false
   end
-  print("Burned lava bucket. Fuel: " .. tostring(turtle.getFuelLevel()))
+  print("Burned lava bucket for fuel. Fuel: " .. tostring(turtle.getFuelLevel()))
   return itemName(BUCKET_SLOT) == "minecraft:bucket"
 end
 
@@ -163,7 +168,11 @@ local function ensureEmptyBucket()
   local name = itemName(BUCKET_SLOT)
   if name == "minecraft:bucket" then return true end
   if name == "minecraft:lava_bucket" then
-    return burnLavaBucket()
+    if needsFuel() then
+      return burnLavaBucket()
+    end
+    print("Slot 1 already has a lava bucket; emptying into the tank first.")
+    return false
   end
   print("Put an empty bucket in turtle slot 1.")
   return false
@@ -180,13 +189,48 @@ local function isLavaCauldron(data)
   return false
 end
 
+local function emptyBucketIntoTank()
+  if not goHome() then return false end
+  faceDir(2) -- tank is behind home
+  turtle.select(BUCKET_SLOT)
+
+  local name = itemName(BUCKET_SLOT)
+  if name == "minecraft:bucket" then
+    faceDir(0)
+    return true
+  end
+  if name ~= "minecraft:lava_bucket" then
+    print("Slot 1 does not have a lava bucket to empty.")
+    faceDir(0)
+    return false
+  end
+
+  if not turtle.place() then
+    print("Could not empty the lava bucket into the tank behind home.")
+    faceDir(0)
+    return false
+  end
+
+  if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
+    print("Tank did not return an empty bucket.")
+    faceDir(0)
+    return false
+  end
+
+  print("Emptied lava into the tank. Fuel: " .. tostring(turtle.getFuelLevel()))
+  faceDir(0)
+  return true
+end
+
 local function fillBucketFromTank()
   if pos.x ~= 0 or pos.y ~= 0 or pos.z ~= 0 then
     if not goHome() then return false end
   end
-  if not ensureEmptyBucket() then
-    faceDir(0)
-    return false
+  if itemName(BUCKET_SLOT) ~= "minecraft:bucket" then
+    if not ensureEmptyBucket() then
+      faceDir(0)
+      return false
+    end
   end
 
   faceDir(2) -- tank is behind home
@@ -208,25 +252,24 @@ local function fillBucketFromTank()
 end
 
 local function refuelFromTankIfNeeded()
-  local fuel = turtle.getFuelLevel()
-  if fuel == "unlimited" then
-    print("Fuel is unlimited; skipping tank refuel.")
-    return true
-  end
-  if fuel >= REFUEL_BELOW then
-    print("Fuel is " .. fuel .. " (threshold " .. REFUEL_BELOW ..
-          "); skipping tank refuel.")
+  if not needsFuel() then
+    local fuel = turtle.getFuelLevel()
+    if fuel == "unlimited" then
+      print("Fuel is unlimited; skipping tank refuel.")
+    else
+      print("Fuel is " .. fuel .. " (threshold " .. REFUEL_BELOW ..
+            "); skipping tank refuel.")
+    end
     return true
   end
 
   print("Fuel is low; pulling lava from the tank behind home...")
   if not goHome() then return false end
 
-  while turtle.getFuelLevel() ~= "unlimited" and
-        turtle.getFuelLevel() < REFUEL_BELOW do
+  while needsFuel() do
     if not fillBucketFromTank() then
       faceDir(0)
-      return turtle.getFuelLevel() > 0
+      return turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() > 0
     end
     if not burnLavaBucket() then
       faceDir(0)
@@ -236,6 +279,14 @@ local function refuelFromTankIfNeeded()
 
   faceDir(0)
   return true
+end
+
+local function handleCollectedLava()
+  if needsFuel() then
+    print("Fuel is below " .. REFUEL_BELOW .. "; burning this bucket.")
+    return burnLavaBucket()
+  end
+  return emptyBucketIntoTank()
 end
 
 local function collectFromCauldronAhead()
@@ -280,7 +331,7 @@ local function sweepField(cols, rows)
     for col = 1, cols do
       local fuel = turtle.getFuelLevel()
       if fuel ~= "unlimited" and fuel < 50 then
-        print("Fuel is low mid-run; checking the home tank...")
+        print("Fuel is critically low; checking the home tank...")
         if not refuelFromTankIfNeeded() or
            (turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < 50) then
           print("Unable to keep enough fuel. Stopping.")
@@ -289,7 +340,11 @@ local function sweepField(cols, rows)
         end
       end
 
-      if not ensureEmptyBucket() then
+      if itemName(BUCKET_SLOT) == "minecraft:lava_bucket" then
+        if not handleCollectedLava() then
+          return collected, false
+        end
+      elseif not ensureEmptyBucket() then
         goHome()
         return collected, false
       end
@@ -308,8 +363,7 @@ local function sweepField(cols, rows)
 
       if collectFromCauldronAhead() then
         collected = collected + 1
-        if not burnLavaBucket() then
-          goHome()
+        if not handleCollectedLava() then
           return collected, false
         end
       end
@@ -350,10 +404,15 @@ end
 
 print("Field: " .. cols .. " cauldrons/row, " .. rows ..
       " rows, 1 empty block between rows.")
-print("Startup fuel comes from the tank behind home.")
-print("Collected cauldron lava is burned as turtle fuel.")
+print("Lava goes into the tank behind home.")
+print("Lava is burned for fuel only when below " .. REFUEL_BELOW .. ".")
 
-if not ensureEmptyBucket() then return end
+if itemName(BUCKET_SLOT) == "minecraft:lava_bucket" then
+  if not handleCollectedLava() then return end
+elseif not ensureEmptyBucket() then
+  return
+end
+
 if not refuelFromTankIfNeeded() then
   print("Unable to start: add lava to the tank behind the turtle.")
   return
@@ -378,7 +437,7 @@ while true do
           "s before checking again...")
     sleep(WAIT_BETWEEN_PASSES)
   else
-    print("Pass complete. Burned " .. collected ..
+    print("Pass complete. Collected " .. collected ..
           " lava bucket(s). Scanning again...")
   end
 end
